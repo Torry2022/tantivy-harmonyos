@@ -1,0 +1,10 @@
+tantivy-harmonyos is an unofficial fixed-schema C ABI adapter and OpenHarmony
+cross-compilation example. It is not an official Tantivy or Huawei project.
+
+Tantivy 0.26.2: https://github.com/quickwit-oss/tantivy (MIT).
+Jieba-rs 0.8.1: https://github.com/messense/jieba-rs (MIT).
+See Cargo.lock for all pinned transitive dependencies. Their licenses continue
+to apply. Bundled tokenizer dictionary data also retains its upstream notices.
+
+No upstream Tantivy source modifications are currently required by this adapter.
+This statement does not imply that every Tantivy API or feature is supported.

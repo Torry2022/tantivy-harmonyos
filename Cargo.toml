@@ -1,0 +1,20 @@
+[package]
+name = "tantivy-ohos"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tantivy = { version = "=0.26.2", default-features = false, features = ["mmap", "lz4-compression"] }
+jieba-rs = "=0.8.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "debuginfo"

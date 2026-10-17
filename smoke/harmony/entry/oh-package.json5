@@ -1,0 +1,1 @@
+{"name":"entry","version":"1.0.0","dependencies":{"libtantivy_probe.so":"file:./src/main/cpp/types/libtantivy_probe"}}
