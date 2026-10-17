@@ -1,5 +1,7 @@
 # tantivy-harmonyos
 
+[简体中文](README.md) | [English](README_EN.md)
+
 Tantivy 0.26.2 的非官方 HarmonyOS arm64 适配，提供可复现的 Windows PowerShell 构建脚本、精简 C API、中文分词和独立真机测试工程。
 
 用于在鸿蒙 Native 模块中验证本地全文检索，不是 Tantivy 或华为的官方项目。第一版采用固定的文档 ID / 正文字段，未接入 Turbo AI Chat，也不要求同时引入向量数据库。
