@@ -14,6 +14,16 @@ Tantivy 0.26.2 的非官方 HarmonyOS arm64 适配，提供可复现的 Windows 
 
 这不是 Tantivy 全量 API 的映射。句法、分词和字段定义见 [C 头文件](include/tantivy_ohos.h)；已有索引必须符合本适配器的 schema。
 
+## 预编译库
+
+从 [v0.26.2-ohos.1 Release](https://github.com/Torry2022/tantivy-harmonyos/releases/tag/v0.26.2-ohos.1) 下载 `tantivy-0.26.2-harmonyos-arm64-v8a.zip`，并使用同页的 `SHA256SUMS` 校验：
+
+```powershell
+Get-FileHash .\tantivy-0.26.2-harmonyos-arm64-v8a.zip -Algorithm SHA256
+```
+
+压缩包包含 arm64 动态库、C 头文件、源码和未签名测试工程、构建清单与第三方许可。库中已包含默认中文词典，无需另外下载词典文件；按下方 Native 调用说明集成即可。版本号跟随 Tantivy 上游，`ohos.1` 表示本项目的首次适配发布；C API 适配器版本为 0.1.0。
+
 ## 构建
 
 已验证的构建组合为 Windows、Rust 1.90.0（GNU host）、DevEco OpenHarmony Native SDK 和 arm64 OHOS 目标。Tantivy 与 Jieba-rs 分别固定为 0.26.2、0.8.1；完整依赖固定在 Cargo.lock。
@@ -107,8 +117,10 @@ hdc -t <device> shell aa start -a EntryAbility -b com.torry2022.retrievalprobe -
 - 采用 Jieba 默认模式加 HMM，不包含领域用户词典、搜索模式同义词或相关性调优。
 - 不保证与其他 Tantivy 版本、schema 或分词配置的索引兼容。
 - 小样本正确性测试不等于性能、检索质量、断电恢复或并发压力验收。
-- 已测试的动态库只依赖系统 libc；它仍包含 Rust 及若干依赖的静态代码，分发时需保留相关许可。此仓库先提供源码与构建方法，尚未发布预编译 Release。
+- 已测试的动态库只依赖系统 libc；它仍包含 Rust 及若干依赖的静态代码，分发时需保留相关许可。预编译包同时附带依赖许可与来源材料。
 
 ## 许可证
 
-适配代码和脚本采用 MIT。Tantivy、Jieba-rs 及其他依赖保留各自许可，见 LICENSE、NOTICE、third_party/ 与 Cargo.lock。发布预编译产物时，还需随包收集完整依赖许可和词典来源材料。
+适配代码和脚本采用 MIT。Tantivy、Jieba-rs 及其他依赖保留各自许可，见 LICENSE、NOTICE、third_party/ 与 Cargo.lock。预编译包的 `licenses/` 包含依赖、Rust 标准库和词典许可材料，`BUILD-MANIFEST.json` 记录来源提交、依赖版本和词典哈希。再分发时请保留这些材料。
+
+维护者打包时，在与构建相同的 Rust 环境中运行 `python package_release.py`（需要 Python 3）。脚本从锁定的 OHOS 依赖图收集许可，加入已验证的动态库、Git 已跟踪源码及文件校验和，输出到 `build/release/`；不会包含本地签名和构建目录。

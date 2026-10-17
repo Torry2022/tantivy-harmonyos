@@ -8,3 +8,8 @@ to apply. Bundled tokenizer dictionary data also retains its upstream notices.
 
 No upstream Tantivy source modifications are currently required by this adapter.
 This statement does not imply that every Tantivy API or feature is supported.
+
+Precompiled distributions include the resolved Cargo dependency notices and
+Rust standard-library license materials under licenses/. Build-time packages
+are included conservatively; not every listed dependency is linked at runtime.
+See third_party/DICTIONARY.md for embedded dictionary and HMM data sources.
