@@ -51,6 +51,24 @@ cad21bd73d453815c6f5a8030fad8660a5d2bfc1cf7560ea8079bc4c91206919
 
 ## 最终产物真机验证
 
+### 运行测试
+
+构建库后运行 `./prepare_smoke.ps1`，在 DevEco 打开 `smoke/harmony`，为测试包配置调试签名。可以复用已有证书和密钥，新包名只需关联相应的 Profile。
+
+默认包名为 `com.torry2022.retrievalprobe`，三个阶段需分别运行于独立进程：
+
+```sh
+hdc -t <device> shell aa start -a EntryAbility -b com.torry2022.retrievalprobe --ps phase create
+hdc -t <device> shell aa force-stop com.torry2022.retrievalprobe
+hdc -t <device> shell aa start -a EntryAbility -b com.torry2022.retrievalprobe --ps phase reopen
+hdc -t <device> shell aa force-stop com.torry2022.retrievalprobe
+hdc -t <device> shell aa start -a EntryAbility -b com.torry2022.retrievalprobe --ps phase verify
+```
+
+默认目录为 `filesDir/trial-01`。再次测试时，为三个阶段都添加相同的新 `--ps runId trial-02`，保留旧数据并改用新目录。测试程序不会删除已有索引。各阶段报告保存在相应目录的 `report-tantivy-*.txt`、`details-tantivy-*.log` 和 `errors-tantivy-*.log` 中。
+
+### 验证结果
+
 使用准备提交的独立测试工程和上述最终库，在应用 filesDir/final-20261017 下创建新的测试索引。没有使用聊天 App 的目录或已有实验 collection。
 
 三个阶段分别运行于独立进程；阶段之间仅停止测试包自身。
