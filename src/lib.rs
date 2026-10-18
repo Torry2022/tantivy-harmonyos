@@ -1,6 +1,18 @@
+mod advanced;
+mod api;
+pub use advanced::*;
+mod config;
+mod readonly;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_v2;
+#[cfg(test)]
+mod tests_v3;
+#[cfg(test)]
+mod tests_v4;
 mod tokenizer;
+pub use api::*;
 
 use serde::Serialize;
 use std::ffi::{c_char, CStr, CString};
@@ -14,16 +26,26 @@ use tantivy::schema::{
     STORED, STRING,
 };
 use tantivy::tokenizer::{LowerCaser, TextAnalyzer};
-use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
+use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
 type Result<T> = std::result::Result<T, String>;
+
+fn finite_score(score: f32) -> Result<()> {
+    if !score.is_finite() {
+        return Err("non-finite search score: query boost or scoring arithmetic overflow".into());
+    }
+    Ok(())
+}
 
 pub struct SearchHandle {
     index: Index,
     reader: IndexReader,
-    writer: IndexWriter,
+    writer: Option<IndexWriter>,
+    config: config::Config,
     id: Field,
     text: Field,
+    #[cfg(test)]
+    docstore_reads: std::cell::Cell<usize>,
 }
 
 #[derive(Serialize)]
@@ -49,28 +71,55 @@ fn schema() -> Schema {
 
 impl SearchHandle {
     fn open(path: &str, create: bool) -> Result<Self> {
-        let expected = schema();
-        let index = if create {
+        let h = Self::open_config(path, create.then(config::Config::legacy), false)?;
+        h.require_legacy()?;
+        Ok(h)
+    }
+    fn open_config(path: &str, create: Option<config::Config>, read_only: bool) -> Result<Self> {
+        let (index, config) = if let Some(config) = create {
+            let expected = config.schema()?;
             // Create only in a new directory; never overwrite another index.
             std::fs::create_dir(path).map_err(|e| e.to_string())?;
-            Index::create_in_dir(path, expected.clone()).map_err(|e| e.to_string())?
+            let index = Index::create_in_dir(path, expected).map_err(|e| e.to_string())?;
+            config.save(path)?;
+            (index, config)
         } else {
-            Index::open_in_dir(Path::new(path)).map_err(|e| e.to_string())?
-        };
-        if index.schema() != expected {
-            return Err("unsupported index schema".into());
-        }
-        index.tokenizers().register(
-            "zh_jieba_v1",
-            TextAnalyzer::builder(tokenizer::ChineseTokenizer)
-                .filter(LowerCaser)
-                .build(),
-        );
-        let id = expected.get_field("id").map_err(|e| e.to_string())?;
-        let text = expected.get_field("text").map_err(|e| e.to_string())?;
-        let writer = index
-            .writer_with_num_threads(1, 15_000_000)
+            let index = if read_only {
+                Index::open(readonly::ReadOnlyDirectory::open(path)?)
+            } else {
+                Index::open_in_dir(Path::new(path))
+            }
             .map_err(|e| e.to_string())?;
+            let config = config::Config::load(path, &index.schema())?;
+            (index, config)
+        };
+        if config.version == 3 {
+            let jieba = tokenizer::configured_jieba(config.dictionary.as_ref().unwrap());
+            index.tokenizers().register(
+                &config.tokenizer,
+                TextAnalyzer::builder(tokenizer::ConfiguredTokenizer(jieba))
+                    .filter(LowerCaser)
+                    .build(),
+            );
+        } else {
+            index.tokenizers().register(
+                "zh_jieba_v1",
+                TextAnalyzer::builder(tokenizer::ChineseTokenizer)
+                    .filter(LowerCaser)
+                    .build(),
+            );
+        }
+        let id = index.schema().get_field("id").map_err(|e| e.to_string())?;
+        let text = index.schema().get_field("text").unwrap_or(id);
+        let writer = if read_only {
+            None
+        } else {
+            Some(
+                index
+                    .writer_with_num_threads(1, 15_000_000)
+                    .map_err(|e| e.to_string())?,
+            )
+        };
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
@@ -80,25 +129,62 @@ impl SearchHandle {
             index,
             reader,
             writer,
+            config,
             id,
             text,
+            #[cfg(test)]
+            docstore_reads: std::cell::Cell::new(0),
         })
     }
     fn upsert(&mut self, id: &str, text: &str) -> Result<()> {
+        self.require_legacy()?;
         if id.is_empty() {
             return Err("document id must not be empty".into());
         }
-        self.writer.delete_term(Term::from_field_text(self.id, id));
+        let mut doc = TantivyDocument::default();
+        doc.add_text(self.id, id);
+        doc.add_text(self.text, text);
+        self.replace(id, doc)
+    }
+    fn require_legacy(&self) -> Result<()> {
+        if self.config != config::Config::legacy() {
+            return Err(
+                "legacy text API requires the original id/text configuration; use v2".into(),
+            );
+        }
+        Ok(())
+    }
+    fn writer(&mut self) -> Result<&mut IndexWriter> {
         self.writer
-            .add_document(doc!(self.id => id, self.text => text))
+            .as_mut()
+            .ok_or("read-only handle: write operation is not allowed".into())
+    }
+    fn replace(&mut self, id: &str, document: TantivyDocument) -> Result<()> {
+        // Preserve delete-before-add ordering, including multiple replacements
+        // of the same ID before a commit. Callers validate before this batch.
+        let term = Term::from_field_text(self.id, id);
+        self.writer()?
+            .run([
+                tantivy::indexer::UserOperation::Delete(term),
+                tantivy::indexer::UserOperation::Add(document),
+            ])
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+    fn delete(&mut self, id: &str) -> Result<()> {
+        if id.is_empty() {
+            return Err("document id must not be empty".into());
+        }
+        let term = Term::from_field_text(self.id, id);
+        self.writer()?.delete_term(term);
+        Ok(())
+    }
     fn commit(&mut self) -> Result<()> {
-        self.writer.commit().map_err(|e| e.to_string())?;
+        self.writer()?.commit().map_err(|e| e.to_string())?;
         self.reader.reload().map_err(|e| e.to_string())
     }
     fn search(&self, query: &str, limit: usize) -> Result<String> {
+        self.require_legacy()?;
         if limit == 0 || limit > 1000 {
             return Err("limit must be between 1 and 1000".into());
         }
@@ -111,6 +197,7 @@ impl SearchHandle {
             .map_err(|e| e.to_string())?;
         let mut hits = Vec::with_capacity(docs.len());
         for (score, address) in docs {
+            finite_score(score)?;
             let doc: TantivyDocument = searcher.doc(address).map_err(|e| e.to_string())?;
             hits.push(Hit {
                 id: doc
@@ -169,7 +256,7 @@ fn boundary(error: *mut *mut c_char, operation: impl FnOnce() -> Result<()>) -> 
 
 #[no_mangle]
 pub extern "C" fn tantivy_ohos_abi_version() -> u32 {
-    1
+    4
 }
 
 /// # Safety
@@ -213,15 +300,7 @@ pub unsafe extern "C" fn tantivy_ohos_delete(
     id: *const c_char,
     error: *mut *mut c_char,
 ) -> i32 {
-    boundary(error, || {
-        let h = handle(h)?;
-        let id = string(id)?;
-        if id.is_empty() {
-            return Err("document id must not be empty".into());
-        }
-        h.writer.delete_term(Term::from_field_text(h.id, id));
-        Ok(())
-    })
+    boundary(error, || handle(h)?.delete(string(id)?))
 }
 
 /// # Safety
@@ -258,16 +337,20 @@ pub unsafe extern "C" fn tantivy_ohos_search(
 /// h must be null or a live, exclusive handle returned by open. It cannot be reused after close.
 #[no_mangle]
 pub unsafe extern "C" fn tantivy_ohos_close(h: *mut SearchHandle) {
-    if !h.is_null() {
-        drop(Box::from_raw(h));
-    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if !h.is_null() {
+            drop(Box::from_raw(h));
+        }
+    }));
 }
 
 /// # Safety
 /// value must be null or an unfreed string returned by this library.
 #[no_mangle]
 pub unsafe extern "C" fn tantivy_ohos_free_string(value: *mut c_char) {
-    if !value.is_null() {
-        drop(CString::from_raw(value));
-    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if !value.is_null() {
+            drop(CString::from_raw(value));
+        }
+    }));
 }
