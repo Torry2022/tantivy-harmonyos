@@ -1,6 +1,6 @@
 use super::*;
 
-fn fixture_path(label: &str) -> String {
+pub(super) fn fixture_path(label: &str) -> String {
     let base = std::env::temp_dir().join(format!(
         "tantivy-ohos-{}-{}-{}",
         label,
@@ -59,7 +59,7 @@ fn chinese_queries_mutation_visibility_and_reopen() {
     {
         let mut h = SearchHandle::open(&path, false).unwrap();
         assert_eq!(ids(&h, "鸿蒙"), ["a", "b"]);
-        h.writer.delete_term(Term::from_field_text(h.id, "b"));
+        h.delete("b").unwrap();
         h.upsert("a", "鸿蒙设备已经更新文档。").unwrap();
         assert_eq!(ids(&h, "检索"), ["a"]);
         h.commit().unwrap();
