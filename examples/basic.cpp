@@ -1,4 +1,4 @@
-/* C++11: legacy indexing, a v2 read-only handle, and RAII ownership.
+/* C++11: indexing, read-only query and RAII ownership.
  * Run: basic_cpp <new-index-path>. Never removes or overwrites an index.
  */
 #include "tantivy_ohos.h"
@@ -8,7 +8,7 @@
 #include <string>
 
 using Handle = std::unique_ptr<tantivy_ohos_handle, decltype(&tantivy_ohos_close)>;
-using Result = std::unique_ptr<tantivy_ohos_result, decltype(&tantivy_ohos_free_result_v2)>;
+using Result = std::unique_ptr<tantivy_ohos_result, decltype(&tantivy_ohos_free_result)>;
 using String = std::unique_ptr<char, decltype(&tantivy_ohos_free_string)>;
 static void checked(int status, char*& error) {
     String owned(error, tantivy_ohos_free_string);
@@ -20,34 +20,27 @@ int main(int argc, char** argv) {
     try {
         char* error = nullptr;
         tantivy_ohos_handle* raw = nullptr;
-        checked(tantivy_ohos_open(argv[1], true, &raw, &error), error);
+        checked(tantivy_ohos_create(argv[1], R"({"fields":[{"name":"text","kind":1,"flags":15}]})", nullptr, &raw, &error), error);
         Handle writer(raw, tantivy_ohos_close);
-        checked(tantivy_ohos_upsert(writer.get(), "a", "鸿蒙设备支持中文检索", &error), error);
+        const tantivy_ohos_field_value value = {"text", TANTIVY_OHOS_TEXT, "鸿蒙设备支持中文检索", 0, 0.0};
+        checked(tantivy_ohos_upsert(writer.get(), "a", &value, 1, &error), error);
         checked(tantivy_ohos_commit(writer.get(), &error), error);
         writer.reset();
-        const tantivy_ohos_open_options_v2 ro = {
-            sizeof(ro), TANTIVY_OHOS_OPTIONS_V2, TANTIVY_OHOS_READ_ONLY
+        const tantivy_ohos_open_options ro = {
+            sizeof(ro), TANTIVY_OHOS_READ_ONLY
         };
-        checked(tantivy_ohos_open_v2(argv[1], &ro, &raw, &error), error);
+        checked(tantivy_ohos_open(argv[1], &ro, nullptr, &raw, &error), error);
         Handle reader(raw, tantivy_ohos_close);
-        const tantivy_ohos_search_options_v2 search = {
-            sizeof(search), TANTIVY_OHOS_OPTIONS_V2, TANTIVY_OHOS_PROJECT_NONE,
-            nullptr, 0, nullptr, 0
-        };
         tantivy_ohos_result* raw_result = nullptr;
-        checked(tantivy_ohos_search_v2(reader.get(), "检索", 10, &search, &raw_result, &error), error);
-        Result result(raw_result, tantivy_ohos_free_result_v2);
-        char* raw_json = nullptr;
-        checked(tantivy_ohos_search(reader.get(), "检索", 10, &raw_json, &error), error);
-        String json(raw_json, tantivy_ohos_free_string);
-        std::cout << json.get() << '\n';
+        checked(tantivy_ohos_search(reader.get(), R"({"query":"检索","limit":10,"projection":"none"})", &raw_result, &error), error);
+        Result result(raw_result, tantivy_ohos_free_result);
         reader.reset(); // result keeps its own data
         size_t count = 0;
-        checked(tantivy_ohos_result_count_v2(result.get(), &count, &error), error);
+        checked(tantivy_ohos_result_count(result.get(), &count, &error), error);
         if (count != 1) throw std::runtime_error("expected one persisted hit");
         for (size_t i = 0; i < count; ++i) {
-            tantivy_ohos_hit_view_v2 hit = {};
-            checked(tantivy_ohos_result_hit_v2(result.get(), i, &hit, &error), error);
+            tantivy_ohos_hit_view hit = {};
+            checked(tantivy_ohos_result_hit(result.get(), i, &hit, &error), error);
             std::cout << hit.id << " score=" << hit.score << " fields=" << hit.field_count << '\n';
         }
     } catch (const std::exception& e) {

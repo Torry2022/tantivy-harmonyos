@@ -11,7 +11,7 @@ rustup toolchain install 1.90.0 --profile minimal
 python3 tools/check.py
 ```
 
-It builds the two pinned published versions and the working tree, runs Rust tests, builds/runs the C99 and C++11 examples with CMake, and runs unchanged historical consumers with the candidate library. It also checks exported functions, frozen declarations/layouts, and read-only access to indexes created by the historical libraries. Dependencies use their committed lock files. Historical sources come from local Git objects, not downloaded binaries. A shallow clone must fetch the referenced history first.
+It runs Rust tests, builds the current library, checks its exports against the public header, and builds/runs C99 and C++11 consumers with CMake. Separate-process checks exercise create, reopen and read-only access, including whole-index file hashes and modification times. Dependencies use the committed lockfile. It does not build or preserve retired interfaces. Every run retains logs and a JSON report under `build/`.
 
 Windows uses the Rust `1.90.0-x86_64-pc-windows-gnu` toolchain, llvm-mingw, CMake and Ninja on PATH. The GNU linker may need `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER` set to the matching Rust bundled GCC driver. Use `--cc`, `--cxx`, `--cmake` and `--readobj` for tool paths containing spaces. The runner selects this explicit GNU toolchain on Windows and `+1.90.0` on Linux without changing global toolchain settings. It does not cover MSVC.
 
@@ -33,4 +33,4 @@ This checks the complete checksum inventory, required files, matching public/sou
 
 ## Changing the interface
 
-Read [compatibility and support](docs/COMPATIBILITY.md) first. Preserve frozen C layouts and legacy behavior; use additive symbols for incompatible options. New APIs need an ownership/thread/error contract and external C/C++ tests. Changes to schema, dictionaries or saved metadata need old-index checks. Keep the two READMEs aligned and add a concise user-facing changelog entry. Formatting or documentation-only changes do not require device installation or a new binary release.
+Read [compatibility and support](docs/COMPATIBILITY.md) first. Keep one coherent current interface; do not reintroduce retired entry points or versioned aliases. Public functions need an ownership/thread/error contract and external C/C++ tests. Changes to schema, dictionaries or saved metadata need saved-index checks. Keep the two READMEs aligned and add a concise user-facing changelog entry. Formatting or documentation-only changes do not require device installation or a new binary release.

@@ -2,174 +2,212 @@
 
 [简体中文](README.md) | [English](README_EN.md)
 
-[Tantivy](https://github.com/quickwit-oss/tantivy) full-text search for HarmonyOS arm64 applications through a C API for Native modules. Supports Jieba Chinese tokenization, BM25 ranking, Boolean and phrase queries, and persistent inserts, updates and deletes.
+Tantivy full-text search for HarmonyOS arm64 applications, exposed through a C interface for Native modules. Supports Jieba Chinese tokenization, BM25, Boolean and phrase queries, field sorting, aggregations, dictionary extensions, and persistent index writes, updates and deletions.
 
-This unofficial adapter uses official Tantivy **0.26.2** and jieba-rs **0.8.1**, with no changes to Tantivy's upstream source. It provides **ABI 4** while retaining the ABI 1/2/3 interfaces. This adapter exposes a subset of Tantivy's Rust API.
+This unofficial adapter uses Tantivy **0.26.2** and jieba-rs **0.8.1**, without modifying Tantivy's upstream source. It supplies a C header, shared-library build script and examples. ArkTS applications call the C interface through their own Node-API module.
 
-Download `tantivy-0.26.2-harmonyos-arm64-v8a.zip` from the `v0.26.2-ohos.2` [release](https://github.com/Torry2022/tantivy-harmonyos/releases) and verify it against the accompanying `SHA256SUMS`. The archive contains the shared library, matching header, source, examples and dependency notices. The library is in `lib/arm64-v8a/`, the header in `include/`, and the complete source and build scripts in `source/`. The older `ohos.1` archive remains ABI 1 and does not include the new interfaces.
+## Get the SDK
 
-## Integration
+Cross-compile the shared library and its matching header on Windows as follows, then copy them into your project.
 
-Put `libtantivy_ohos.so` in `entry/src/main/libs/arm64-v8a/` and add [tantivy_ohos.h](include/tantivy_ohos.h) to your include path. Link it with CMake (assuming the calling target is `entry`):
+Windows builds need Git, [Rust](https://rustup.rs/), the OpenHarmony Native SDK bundled with DevEco, and the Windows x86_64 UCRT toolchain from [llvm-mingw](https://github.com/mstorsjo/llvm-mingw/releases). Builds have used Rust 1.90.0, llvm-mingw 20261006 UCRT and Native SDK API 26; this does not establish a minimum supported OS version.
+
+```powershell
+git clone https://github.com/Torry2022/tantivy-harmonyos.git
+cd tantivy-harmonyos
+rustup toolchain install 1.90.0-x86_64-pc-windows-gnu --profile minimal
+rustup target add aarch64-unknown-linux-ohos --toolchain 1.90.0-x86_64-pc-windows-gnu
+$env:RUSTUP_TOOLCHAIN = '1.90.0-x86_64-pc-windows-gnu'
+.\build_ohos.ps1 -OpenHarmonySdk 'C:\path\to\openharmony' `
+  -HostLlvm 'C:\path\to\llvm-mingw' -Jobs 2
+```
+
+Replace the two example paths. `-OpenHarmonySdk` points to the `openharmony` directory containing `native`; `-HostLlvm` points to the extracted directory containing `bin/llvm-dlltool.exe`. The script builds with `Cargo.lock` and produces:
+
+```text
+out/aarch64-unknown-linux-ohos/
+├── libtantivy_ohos.so
+└── tantivy_ohos.h
+```
+
+## Integrate into a HarmonyOS project
+
+Copy the library and header into your Native module, for example:
+
+```text
+entry/src/main/
+├── libs/arm64-v8a/libtantivy_ohos.so
+└── cpp/
+    ├── CMakeLists.txt
+    └── third_party/tantivy/include/tantivy_ohos.h
+```
+
+Add the following to that module's `entry/src/main/cpp/CMakeLists.txt`. Replace `entry` with your own `add_library` target:
 
 ```cmake
 add_library(tantivy_ohos SHARED IMPORTED)
 set_target_properties(tantivy_ohos PROPERTIES
-    IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libs/arm64-v8a/libtantivy_ohos.so")
+    IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/../libs/arm64-v8a/libtantivy_ohos.so"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tantivy/include")
 target_link_libraries(entry PRIVATE tantivy_ohos)
 ```
 
-Keep indexes in the application sandbox. Obtain `filesDir` in ArkTS and pass it to Native code. Creation requires a new directory path with an existing parent; existing directories are never overwritten. A failed create may leave partial files: inspect them and use a new path.
+Include `tantivy_ohos.h` in C/C++. Your Node-API bridge converts ArkTS arguments to UTF-8 paths/requests and returns results. Perform indexing and searching on worker threads to avoid blocking the UI. Do not access one handle concurrently from multiple tasks.
 
-| Purpose | API |
+Store indexes in a writable application sandbox directory, for example by passing `context.filesDir + '/search-index'` from ArkTS to Native. Use `create` once and `open` on subsequent launches. The parent must exist; the index directory itself must not exist when creating.
+
+## Minimal call sequence
+
+This complete C99 function creates an index, writes a document, commits, searches and releases resources. `flags:15` means stored, indexed, default query and default return.
+
+```c
+#include "tantivy_ohos.h"
+#include <stdio.h>
+
+/* path must not exist; its parent must exist. */
+int index_example(const char* path) {
+    tantivy_ohos_handle* index = NULL;
+    tantivy_ohos_result* result = NULL;
+    char* error = NULL;
+    int status = 1;
+    const char* config =
+        "{\"fields\":[{\"name\":\"text\",\"kind\":1,\"flags\":15}]}";
+    const tantivy_ohos_field_value text = {
+        "text", TANTIVY_OHOS_TEXT, "鸿蒙设备支持本地中文检索", 0, 0.0
+    };
+    if (tantivy_ohos_create(path, config, NULL, &index, &error)) goto cleanup;
+    if (tantivy_ohos_upsert(index, "doc-1", &text, 1, &error)) goto cleanup;
+    if (tantivy_ohos_commit(index, &error)) goto cleanup;
+    if (tantivy_ohos_search(index,
+        "{\"query\":\"中文检索\",\"limit\":10,\"projection\":\"none\"}",
+        &result, &error)) goto cleanup;
+    size_t count = 0;
+    if (tantivy_ohos_result_count(result, &count, &error)) goto cleanup;
+    for (size_t i = 0; i < count; ++i) {
+        tantivy_ohos_hit_view hit = {0};
+        if (tantivy_ohos_result_hit(result, i, &hit, &error)) goto cleanup;
+        printf("%s: %g\n", hit.id, (double)hit.score);
+    }
+    status = 0;
+cleanup:
+    if (error) fprintf(stderr, "%s\n", error);
+    tantivy_ohos_free_string(error);
+    tantivy_ohos_free_result(result);
+    tantivy_ohos_close(index);
+    return status;
+}
+```
+
+To reopen an existing index, replace the create call with:
+
+```c
+const tantivy_ohos_open_options options = {
+    sizeof(options), TANTIVY_OHOS_READ_ONLY
+};
+tantivy_ohos_open(path, &options, NULL, &index, &error);
+```
+
+Return-code handling is omitted in this short fragment; check it as in the complete example. Use `TANTIVY_OHOS_READ_WRITE` for writes. Read-only open requires a `NULL` writer argument.
+
+Complete examples: [C99](examples/basic.c), [C++11 RAII](examples/basic.cpp), [sorting, aggregations and dictionaries](examples/advanced.cpp), and [writer settings](examples/writer_options.c). The [CMake example project](examples/CMakeLists.txt) accepts matching `TANTIVY_INCLUDE_DIR` and `TANTIVY_LIBRARY` paths. For cross-compilation, also supply the Native SDK toolchain; run the executables on the matching target platform.
+
+## Fields and Chinese dictionaries
+
+Pass a JSON configuration like this to `create`. `id` is built in: do not declare it; pass it separately on upsert. Up to 64 additional fields are supported, with unique case-sensitive names matching `[A-Za-z][A-Za-z0-9_]{0,63}`.
+
+```json
+{
+  "fields": [
+    {"name": "title", "kind": 1, "flags": 15},
+    {"name": "category", "kind": 2, "flags": 3},
+    {"name": "price", "kind": 4, "flags": 3}
+  ],
+  "fast_fields": ["category", "price"],
+  "dictionary": {
+    "mode": "extend_default",
+    "entries": [{"word": "鸿蒙星河检索", "frequency": 1000000000}]
+  }
+}
+```
+
+| kind | Type | Behavior |
+| --- | --- | --- |
+| `1` / `TANTIVY_OHOS_TEXT` | Text | Jieba tokenization, lowercase, phrase positions |
+| `2` / `TANTIVY_OHOS_KEYWORD` | Keyword | Exact, case-sensitive matching |
+| `3` / `TANTIVY_OHOS_I64` | Integer | Signed 64-bit |
+| `4` / `TANTIVY_OHOS_F64` | Number | Finite double |
+
+Combine flag bits: `STORED=1`, `INDEXED=2`, `DEFAULT_QUERY=4`, `DEFAULT_RETURN=8`. A field must be stored or indexed. Default returns require storage; default queries require indexed text/keyword fields. Pass values through `tantivy_ohos_field_value`. Upserting an existing ID replaces the whole document: omitted fields become absent, rather than remaining unchanged.
+
+Declare sorting and aggregation fields in `fast_fields`; only KEYWORD/I64/F64 are supported. The optional dictionary extends the embedded Jieba default dictionary. Entries and frequencies persist with the index, so no external dictionary is needed on reopen. Frequencies default to 100000 and range from 1 to 1000000000. At most 10000 unique entries are allowed, each up to 384 UTF-8 bytes without whitespace. Schema and dictionary settings are immutable: changes require a new index and reindexing.
+
+## Queries, pagination and results
+
+`search` accepts JSON and returns typed results, without requiring result JSON parsing:
+
+```json
+{
+  "query": "category:book AND price:[10 TO 100]",
+  "limit": 10,
+  "offset": 0,
+  "projection": "fields",
+  "fields": ["title", "price"],
+  "sort": {"field": "price", "order": "asc"},
+  "track_total": true
+}
+```
+
+| Option | Meaning and default |
 | --- | --- |
-| Create a configurable index with a writer | `tantivy_ohos_create_v2` |
-| Open an existing index read/write | `tantivy_ohos_open_v2`, `READ_WRITE` |
-| Open an existing index read-only | `tantivy_ohos_open_v2`, `READ_ONLY` |
-| Replace a whole document / delete by ID | `tantivy_ohos_upsert_v2` / `tantivy_ohos_delete` |
-| Persist writes and refresh this handle | `tantivy_ohos_commit` |
-| Refresh another reader's committed snapshot | `tantivy_ohos_reload` |
-| Search and iterate typed results | `search_v2`, `result_count_v2`, `result_hit_v2`, `result_value_v2` |
+| `query` | Required. Boolean, phrase, field and range syntax; implicit AND; `*` matches all documents |
+| `limit` | Required, 1..1000; `offset` defaults to 0; their sum must not exceed 10000 |
+| `projection` | `default` uses saved default-return fields; `none` returns ID/score only; `fields` uses the named stored fields in the `fields` array |
+| `query_fields` | Optional unqualified-query default override; does not restrict explicitly field-qualified queries |
+| `sort` | BM25 when omitted; otherwise a fast field with `asc`/`desc`, score=0 and missing values last |
+| `track_total` | False by default; true requests an additional exact matching-document count |
 
-See the complete compilable [C](examples/basic.c) and [C++](examples/basic.cpp) examples. Each takes a new index path and never deletes an existing index.
+Use `result_count` for page length, `result_hit` for ID/score/field count and `result_value` to iterate returned fields. Read strings from `string_value`, integers from `i64_value` and doubles from `f64_value`. Absent values are omitted. In `result_total`, `exact=false` means no count was requested: total=0 does not imply no matches. `result_sort_value` returns a field-sorting value; `present=false` means that document lacks it.
 
-The [CMake example project](examples/CMakeLists.txt) in this repository accepts a downloaded SDK: `cmake -S <repository>/examples -B build-consumer -DTANTIVY_SDK_ROOT=<extracted-sdk>`, then `cmake --build build-consumer`. OHOS cross-compilation additionally requires the Native SDK toolchain file; run the executables on the matching target system. For host test libraries, set `TANTIVY_LIBRARY` and `TANTIVY_INCLUDE_DIR` separately and make the library directory available to the runtime loader.
+Pages use the snapshot loaded for each call; updates, reloads or segment merges can change later pages. ID-only searches with the default `fast_id:true` avoid document-store decompression. Returning any stored field still reads the document store.
 
-## Fields and queries
+## Aggregations
 
-Every index has an implicit `id`: a nonempty, case-sensitive exact string, always stored and indexed. Configure up to 64 additional single-valued fields with unique case-sensitive names matching `[A-Za-z][A-Za-z0-9_]{0,63}`; `id` is reserved.
-
-| Type | Indexing | Use |
-| --- | --- | --- |
-| `TEXT` | Jieba default dictionary/mode, HMM, lowercase, positions | Chinese and mixed text, phrases |
-| `KEYWORD` | Raw case-sensitive whole string | Categories, tags, external identifiers |
-| `I64` | Signed 64-bit integer | Years, counts, field-qualified range queries |
-| `F64` | Finite double; NaN and infinity rejected | Numeric attributes and field-qualified ranges |
-
-Select `STORED`, `INDEXED`, `DEFAULT_QUERY` and `DEFAULT_RETURN` independently. A field must be stored and/or indexed. Default return fields must be stored; default query fields must be indexed text or keyword fields. Storage controls whether the original value can be returned; indexing controls whether it can be queried. The schema is immutable after creation.
-
-`upsert_v2` takes a typed C array and replaces the entire document by ID. Omitted fields disappear; empty strings remain present. Duplicate fields, wrong types, unknown fields and invalid UTF-8 fail before any mutation is queued. The original `id/text` configuration still requires `text` (possibly empty), including when written with v2, preserving legacy JSON search compatibility.
-
-Queries use Tantivy QueryParser: implicit AND, explicit Boolean operators, quoted phrases and field-qualified expressions such as `title:检索` or `year:[2020 TO 2026]`. `query_fields` overrides default fields for unqualified terms for one query. It is not an access filter: explicit field syntax can target any indexed field. With no default query fields, use field-qualified syntax or `*`.
-
-Configuration is saved in `tantivy-ohos.json` beside the index and checked against the actual schema on reopen. Keep the whole directory together and do not edit metadata manually. Read current configuration with `config_json_v2`. The v2 path uses the built-in `zh_jieba_v1` default tokenizer; v3 domain extensions are described below.
-
-See [advanced.cpp](examples/advanced.cpp) for a minimal advanced example (requires ABI 4) and [paging_smoke.c](smoke/paging_smoke.c) for a C consumer with separate-process phases.
-
-## Domain dictionaries and fast fields
-
-`tantivy_ohos_create_v3` accepts versioned JSON. Field kind/flags retain their v2 meanings; a separate `fast_fields` list enables sorting/aggregation on KEYWORD, I64 or F64 fields in a new index:
+Pass JSON like this to `aggregate`. It returns an owned `{"aggregations": ...}` string to release with `free_string`. Aggregations cover all matching documents, independently of page size.
 
 ```json
-{"version":3,"tokenizer":"zh_jieba_v3","fields":[
-  {"name":"title","kind":1,"flags":15},
-  {"name":"category","kind":2,"flags":3},
-  {"name":"price","kind":4,"flags":3}],
- "fast_fields":["category","price"],
- "dictionary":{"mode":"extend_default","entries":[
-   {"word":"鸿蒙星河检索","frequency":1000000000}]}}
+{
+  "query": "*",
+  "aggregations": {
+    "categories": {"terms": {"field": "category", "size": 10}},
+    "prices": {"stats": {"field": "price"}},
+    "bands": {"range": {"field": "price", "ranges": [{"to": 10}, {"from": 10}]}}
+  }
+}
 ```
 
-Domain entries **extend the embedded default dictionary**; they neither replace it nor remove default words. At most 10,000 unique words, each <=384 UTF-8 bytes without whitespace/NUL. Frequency is 1..1,000,000,000, default 100,000. An omitted dictionary means no extensions. Actual entries/frequencies and an accidental-corruption fingerprint are saved in the index's `tantivy-ohos.json`, without an external dictionary-file dependency. Reopen, including read-only open, validates the snapshot and rejects missing/corrupt data. The fingerprint is not authentication.
+`terms` needs a KEYWORD fast field; `stats` and `range` need I64/F64 fast fields. One to sixteen flat aggregations are supported, without nesting. Per-segment terms candidates can produce approximate bucket counts, with upstream error information returned. Stats use f64 and may round large integers. Ranges include the lower bound and exclude the upper; I64 boundaries must be JSON integers within ±2^53. See the [header](include/tantivy_ohos.h) for all parameter limits.
 
-Dictionaries are isolated between indexes and immutable after creation; changes require a new index and reindexing. v3 handles in the same process share an immutable Jieba instance when their complete dictionary configurations match. Different configurations remain isolated. The pool holds only weak references, allowing the instance to be reclaimed after its last user releases it; other reader memory costs still depend on the workload. The v2 creation path retains its original default dictionary and schema.
+## Writer resources and lifetime
 
-## Sorting and common aggregations
+A `NULL` writer argument on create/read-write open selects one indexing worker and 15000000 bytes. To override it:
 
-`tantivy_ohos_search_v3` takes JSON <=64 KiB and returns a structured result accessed with existing v2 getters and released with `free_result_v2`:
-
-```json
-{"version":3,"query":"检索","limit":10,"offset":0,"projection":"none",
- "sort":{"field":"price","order":"asc"}}
+```c
+const tantivy_ohos_writer_options writer = {
+    sizeof(writer), 2, 30000000
+};
+tantivy_ohos_create(path, config, &writer, &index, &error);
 ```
 
-Omit sort for relevance. Field sorting uses native fast-field TopDocs over all query matches, rather than reordering a truncated TopK. I64/F64/KEYWORD support asc/desc; missing values are last in either direction. Strings use raw UTF-8 lexicographic order, not locale collation. Ties use ascending DocAddress, with no configurable secondary key. I64 sorting preserves all 64 integer bits.
+Use 1..8 workers. The total budget is divided between them, with at least 15000000 and less than 4293967295 bytes per worker. This is an indexing arena budget, not a process memory cap: tokenizers, document queues, readers and merge workers cost extra. Settings apply only to that handle and are not saved in index metadata. Read-only open creates no writer.
 
-Relevance score is BM25. Field sorting does not compute BM25 and reports score=0. `result_sort_value_v3` returns the typed sort value and a present flag; missing values have present=false. Limit is 1..1000 and offset+limit <=10,000; resource use grows with offset+limit. Pages use the loaded snapshot and are not stable cursors across reloads, merges or updates. Old indexes without the required fast field return an error, without migration. See below for fast ID access with empty projection and the fallback for old indexes.
+- Check every return code: 0 succeeds, 1 fails. Release library-allocated errors with `free_string`.
+- Writes and deletes become durable only on explicit `commit`; `close` does not commit. Other readers call `reload` to see new commits.
+- One writer per index, alongside multiple readers. Serialize every operation on a handle, including search and close.
+- Results are independent of handles and remain readable after handle close. Their string views are borrowed until `free_result`; never free those strings separately.
+- Release every result, handle and owned string exactly once. All three release functions accept `NULL`.
 
-`tantivy_ohos_aggregate_v3` uses the official AggregationCollector over the **entire query match set**, independently of the result page or TopK:
+Multi-valued fields, JSON/date/byte fields, complex nested aggregations and stable pagination cursors are not exposed. The [header](include/tantivy_ohos.h) defines the complete interface and ownership rules. Development and check instructions are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-```json
-{"version":3,"query":"检索","aggregations":{
-  "categories":{"terms":{"field":"category","size":10,"segment_size":100}},
-  "prices":{"stats":{"field":"price"}},
-  "bands":{"range":{"field":"price","ranges":[
-    {"to":0,"key":"negative"},{"from":10,"to":20,"key":"high"}]}}},
- "memory_limit_bytes":67108864,"bucket_limit":4096}
-```
+## License
 
-The response is `{"version":3,"aggregations":...}` JSON, freed with `free_string`. Only 1..16 flat top-level aggregations are supported. Terms requires a KEYWORD fast field. Size defaults to 10, maximum 1024; segment_size defaults to min(size×10,4096), allowed size..4096. Count-descending candidates can be truncated per segment, so counts/top terms may be approximate. The response includes `doc_count_error_upper_bound` and `sum_other_doc_count`; do not assume exactness on arbitrary data.
-
-Stats requires a numeric fast field and returns count/sum/min/max/avg over present values. Native f64 arithmetic can round I64 values above 2^53; exact integer sums are not promised. Non-finite statistics return an error. Zero matches yield count=0, sum=0 and null min/max/avg.
-
-Range requires a numeric fast field and accepts up to 128 nonoverlapping ranges, including gaps and unsorted input. From is inclusive, to exclusive; omission is unbounded. Only requested buckets are returned in request order; default keys are range_0, range_1, etc. Upstream does not support overlapping ranges. I64 endpoints must be JSON integers in [-2^53,2^53], checked before conversion to f64; larger or decimal-form endpoints fail. F64 endpoints use finite binary64 values. Missing values do not enter buckets.
-
-Bucket limit is 1..4096 (default 4096), including native gap/outer buckets before they are filtered from the response. Memory limit is 1..64 MiB (default 64 MiB), using the native estimated aggregation-memory guard, not a process RSS cap. Actual budget violations return errors. Unknown/wrong-type/non-fast fields and invalid ranges/options fail explicitly. Stored-only fields can be sorted/aggregated when configured as fast fields at creation.
-
-## Projection and ownership
-
-Every hit includes `id` and `score`: BM25 for relevance sorting, or 0 (BM25 not computed) for field sorting. A non-finite returned score, including boost or arithmetic overflow, fails the query rather than returning infinity or JSON null. Select projection through a dedicated mode:
-
-| Projection | fields argument | Additional returned values |
-| --- | --- | --- |
-| `PROJECT_DEFAULT` | `NULL/0` | Saved `DEFAULT_RETURN` fields; may be empty |
-| `PROJECT_NONE` | `NULL/0` | None; ID and score only |
-| `PROJECT_FIELDS` | Nonempty names array | Named stored fields in requested order; missing values omitted |
-
-Since ABI 4, new `create_v3` indexes default to `fast_id:true`, adding a raw string fast column to `id`. When the effective projection is empty, `search_v2` / `search_v3` resolve ID ordinals through that column without calling docstore decompression. Returning any stored field still decodes the document. Set `fast_id:false` in creation JSON to opt out. Missing metadata means false when opening an old index, including existing v3 indexes: these use stored-ID fallback without schema or metadata writes. v2 creation retains its original schema. Callers can iterate typed hit/value views without parsing a JSON result array.
-
-Operations return `0` on success and `1` on error. The optional `char** error` receives an owned UTF-8 message. Non-NULL output slots are cleared before use; release previous allocations before reusing a slot.
-
-- Release handles from open/create with `tantivy_ohos_close`.
-- Release search_v2 / search_v3 results with `tantivy_ohos_free_result_v2`, including zero-hit results.
-- Release error messages, legacy search JSON, configuration JSON and aggregation JSON with `tantivy_ohos_free_string`.
-- Strings in views borrow from the result and remain valid until that result is freed. Never free them separately. Results own their data and survive handle close, commit and reload.
-
-Inputs must be valid NUL-terminated UTF-8 without embedded NUL. Non-NULL pointers must be live, aligned, correctly sized and must not alias outputs. Arbitrary dangling pointers and double frees cannot be detected. Unwinding Rust panics are caught at C boundaries; close a handle after a panic error. Process aborts, including allocation failure, are outside this guarantee.
-
-Set v2 C options `version` to `2` and `struct_size` to `sizeof` its exact type; set v3 JSON `version` to `3`. ABI 1/2 layouts and symbols remain frozen. Unknown sizes, versions, flags and modes fail; future incompatible layouts use new symbols.
-
-## Commit, read-only access and threads
-
-Writes and deletes become durable on explicit commit, which refreshes only that handle's reader. Other readers call `reload` to see a new commit; searches use their last loaded snapshot. Reload does not commit, and close never commits. If refresh fails after a commit, data may already be durable: reload or reopen before retrying.
-
-One writer and multiple read-only handles may coexist. Read-only access creates no writer, takes no writer lock and writes no index files. Mutation and commit calls return clear errors. Opening/reloading briefly takes the existing `.tantivy-meta.lock` using read-only file access to coordinate with writer garbage collection. If that file is missing, the read-only operation fails without creating it. Use a local filesystem with OS file-lock support.
-
-Serialize every operation on a handle, including search, reload and close. Handles may move between threads with caller synchronization; separate handles may run concurrently. Also serialize result access and release: do not free a result while a view is in use.
-
-## Compatibility and scope
-
-All legacy `open/upsert/delete/commit/search/close/free_string` signatures remain available. Legacy open still opens a writer and creates the original `id/text` configuration. Original indexes without adapter metadata are recognized automatically. Legacy search still returns `id/text/score` JSON; legacy upsert and search reject custom configurations. A v2 read-only handle can open an original index and use legacy JSON search. `tantivy_ohos_abi_version()` returns 4, cumulatively including ABI 1/2/3 symbols. Accept versions >= the required ABI; v2 options retain version=2.
-
-Search limits are 1..1000. Relevance sorting returns the highest-scoring hits without promising tie order; field-sort ties follow the rule above. `result_count_v2` always returns page length only. To request a total, add `track_total:true` to `search_v3` JSON and read `result_total_v4`: exact=true means the precise number of all matching live documents, including zero matches and offsets beyond the last hit. exact=false with total=0 means not counted. By default no Count collector runs; all search_v2 results are also marked not counted. The page always uses the same TopDocs scoring path. An explicit total request adds a separate Count scan on the same Searcher snapshot. Separate page calls may still see different snapshots after reload. Multi-valued fields, JSON/date/bytes fields, custom secondary sorts, complex nested aggregations, pagination cursors, query-object construction, replacement of the default dictionary and index migration are not exposed. The adapter's scope does not define the capabilities of HarmonyOS or Tantivy.
-
-## Build from source
-
-Requires Windows, Rust **1.90.0 GNU**, 64-bit MinGW tools and the DevEco OpenHarmony Native SDK. The tested MinGW distribution is llvm-mingw 20261006 UCRT x86_64. Keep `Cargo.lock` and the pinned dependencies:
-
-```powershell
-rustup toolchain install 1.90.0-x86_64-pc-windows-gnu --profile minimal
-rustup target add aarch64-unknown-linux-ohos --toolchain 1.90.0-x86_64-pc-windows-gnu
-$env:RUSTUP_TOOLCHAIN = '1.90.0-x86_64-pc-windows-gnu'
-.\build_ohos.ps1 `
-  -OpenHarmonySdk 'D:\path\to\DevEco Studio\sdk\default\openharmony' `
-  -HostLlvm 'D:\path\to\llvm-mingw-20261006-ucrt-x86_64'
-```
-
-The script uses the lockfile and two parallel jobs by default. It writes a matching library and header to `out/aarch64-unknown-linux-ohos/`, with SONAME `libtantivy_ohos.so`. Run host tests with `cargo test --locked --release -j 2`, with GNU linker tools on PATH. Compile the C/C++ examples with a compiler for the same platform, `-Iinclude`, and the corresponding `tantivy_ohos` shared library.
-
-See [dictionary sharing and hardware validation](VALIDATION_SHARED_JIEBA.md), [ABI 4 supplementary validation](VALIDATION_API_V4_SUPPLEMENT.md), [earlier ABI 4 validation](VALIDATION_API_V4.md), the [public SDK Chinese benchmark protocol](benchmarks/README.md), [v3 capability validation](VALIDATION_API_V3.md) and [ABI 2 validation](VALIDATION_API_V2.md) for actual commands, results and remaining checks. [Historical ABI 1 validation](VALIDATION.md) applies only to its original artifacts and is not device validation of later ABIs.
-
-Windows host tests have encountered denied index-metadata file replacements (system error 5). Captures show replacement failing while security software holds the file; native calls to official Tantivy also reproduce the issue. This does not establish one cause for every such error. Tests do not retry or ignore failures.
-
-See the [validation record](VALIDATION_SHARED_JIEBA.md) for hardware functional checks of the interfaces added in ABI 3/4 and the scope of performance and memory measurements.
-
-Run `python tools/check.py` for host regression and historical library/consumer compatibility checks. It needs Python 3.12+, Rust 1.90.0, CMake, Ninja and full Git history; see [Contributing](CONTRIBUTING.md) for tool requirements. Host checks do not replace HarmonyOS device validation. See [compatibility and support](docs/COMPATIBILITY.md) for version meanings and tested scope; a minimum supported system version has not been established. Changes are listed in the [Changelog](CHANGELOG.md).
-
-To validate the new API inside an application, run `./prepare_api_smoke.ps1` and open the generated `build/api-v4-harmony` in DevEco. It uses the independent bundle `com.torry2022.tantivyapiprobe`. Configure a debug Profile matching that bundle and device; it can use an existing debug certificate and key. The generator refuses to overwrite an existing project. See the validation record for v4 create/reopen/readonly stages. Generate the original v2 test project with `-ApiVersion 2 -Destination <new-directory>`.
-
-## License and packaging
-
-The adapter and scripts use [MIT](LICENSE). Dependencies retain their own licenses; see [NOTICE](NOTICE) and [third_party/](third_party/). Preserve dependency, Rust standard-library and dictionary notices when redistributing.
-
-After reviewing and building a clean source tree, maintainers can run `python package_release.py --expected-library-sha256 <reviewed-library-hash>` to create a local archive. It records the source commit, library hash, ABI and pinned dependencies. Packaging does not publish or push anything.
+The adapter code is [MIT licensed](LICENSE). Tantivy, jieba-rs, embedded dictionary data and other dependencies retain their own licenses; see [NOTICE](NOTICE) and [third_party](third_party). Preserve SDK license files and dependency notices when redistributing binaries.

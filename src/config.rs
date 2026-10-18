@@ -1,7 +1,9 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use tantivy::schema::NumericOptions;
+use tantivy::schema::{
+    IndexRecordOption, NumericOptions, TextFieldIndexing, TextOptions, STORED, STRING,
+};
 
 pub const TEXT: u32 = 1;
 pub const KEYWORD: u32 = 2;
@@ -206,7 +208,10 @@ impl Config {
     pub fn load(path: &str, schema: &Schema) -> Result<Self> {
         let config = match std::fs::read(Path::new(path).join(CONFIG_FILE)) {
             Ok(bytes) => serde_json::from_slice::<Self>(&bytes).map_err(|e| e.to_string())?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && *schema == super::schema() => {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    && *schema == Self::legacy().schema()? =>
+            {
                 Self::legacy()
             }
             Err(e) => return Err(format!("cannot read adapter metadata: {e}")),

@@ -43,8 +43,8 @@ def validate(path):
     lib = entries["lib/arm64-v8a/libtantivy_ohos.so"]
     if lib[:6] != b"\x7fELF\x02\x01" or len(lib) < 64 or struct.unpack_from("<HH", lib, 16) != (3, 183):
         raise ValueError("Expected little-endian AArch64 ELF shared library")
-    if manifest["target"] != "aarch64-unknown-linux-ohos" or manifest["abi_version"] != 4:
-        raise ValueError("Unexpected package target or ABI")
+    if manifest["target"] != "aarch64-unknown-linux-ohos" or manifest["interface"] != "unified":
+        raise ValueError("Unexpected package target or interface")
     if manifest["library_sha256"] != hashlib.sha256(lib).hexdigest():
         raise ValueError("Library differs from build manifest")
     if not any(name.startswith("licenses/") for name in entries):

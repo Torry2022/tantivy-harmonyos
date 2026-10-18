@@ -75,36 +75,35 @@ def main():
         dictionary[f"{package}-{crate['version']}/{relative}"] = digest(data)
     for relative in command("git", "ls-files").splitlines():
         files[f"source/{relative}"] = (ROOT / relative).read_bytes()
-    for relative in ["VALIDATION.md", "VALIDATION_API_V2.md", "VALIDATION_API_V3.md", "VALIDATION_API_V4.md", "VALIDATION_API_V4_SUPPLEMENT.md", "VALIDATION_SHARED_JIEBA.md",
-                     "LICENSE", "NOTICE", "Cargo.lock"]:
+    for relative in ["docs/VALIDATION.md", "LICENSE", "NOTICE", "Cargo.lock"]:
         files[relative] = (ROOT / relative).read_bytes()
     files["README.md"] = ("# tantivy-harmonyos\n\n"
         "[简体中文](README.md) | [English](README_EN.md)\n\n"
-        "HarmonyOS arm64 全文检索 C SDK（ABI 4）。\n\n"
+        "HarmonyOS arm64 全文检索 C SDK。\n\n"
         "- 动态库：`lib/arm64-v8a/libtantivy_ohos.so`\n"
         "- 配套头文件：`include/tantivy_ohos.h`\n"
         "- [接入与构建说明](source/README.md)、[调用示例](source/examples/)\n"
-        "- [验证范围](VALIDATION_SHARED_JIEBA.md)、[许可](LICENSE)和[依赖声明](NOTICE)\n\n"
+        "- [验证范围](docs/VALIDATION.md)、[许可](LICENSE)和[依赖声明](NOTICE)\n\n"
         "请将库和头文件配套使用。源码构建命令在 `source/` 目录执行。"
         "包内示例未签名，运行 HarmonyOS 测试应用需配置自己的调试 Profile。\n").encode()
     files["README_EN.md"] = ("# tantivy-harmonyos\n\n"
         "[简体中文](README.md) | [English](README_EN.md)\n\n"
-        "Full-text search C SDK for HarmonyOS arm64 (ABI 4).\n\n"
+        "Full-text search C SDK for HarmonyOS arm64.\n\n"
         "- Shared library: `lib/arm64-v8a/libtantivy_ohos.so`\n"
         "- Matching header: `include/tantivy_ohos.h`\n"
         "- [Integration and build instructions](source/README_EN.md), [examples](source/examples/)\n"
-        "- [Validation scope](VALIDATION_SHARED_JIEBA.md), [license](LICENSE) and [dependency notices](NOTICE)\n\n"
+        "- [Validation scope](docs/VALIDATION.md), [license](LICENSE) and [dependency notices](NOTICE)\n\n"
         "Use the library with its matching header. Run source build commands from `source/`. "
         "The sample is unsigned; running a HarmonyOS test app requires your own debug Profile.\n").encode()
     files["include/tantivy_ohos.h"] = (ROOT / "include/tantivy_ohos.h").read_bytes()
     library = (ROOT / "out" / TARGET / "libtantivy_ohos.so").read_bytes()
     files["lib/arm64-v8a/libtantivy_ohos.so"] = library
-    # Match an explicitly reviewed build, without inheriting ABI 1 device claims.
+    # Match the explicitly reviewed library build.
     if digest(library) != expected:
         raise SystemExit("Library differs from the explicitly reviewed artifact")
     adapter = next(p for p in metadata["packages"] if p["name"] == "tantivy-ohos")
     manifest = {"source_commit": commit, "target": TARGET, "tantivy": "0.26.2",
-                "adapter": adapter["version"], "abi_version": 4,
+                "adapter": adapter["version"], "interface": "unified",
                 "device_validation": "Not asserted by packaging; see validation records",
                 "rust": command("rustc", "--version"),
                 "library_sha256": digest(library), "dictionary_inputs": dictionary,

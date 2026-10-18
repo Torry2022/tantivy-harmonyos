@@ -245,7 +245,12 @@ mod tests {
         config.tokenizer = "zh_jieba_v3".into();
         config.dictionary = Some(d.clone());
         config.dictionary_fingerprint = Some(config.fingerprint().unwrap());
-        let mut writer = SearchHandle::open_config(&path, Some(config), false).unwrap();
+        let mut writer = SearchHandle::open_config_with_writer(
+            &path,
+            Some(config),
+            Some(crate::writer::WriterConfig::default()),
+        )
+        .unwrap();
         writer.commit().unwrap();
         let instance = configured_jieba(&d);
         let weak = Arc::downgrade(&instance);
@@ -262,7 +267,7 @@ mod tests {
                     let barrier = barrier.clone();
                     let path = path.clone();
                     scope.spawn(move || {
-                        let opened = SearchHandle::open_config(&path, None, true);
+                        let opened = SearchHandle::open_config_with_writer(&path, None, None);
                         barrier.wait();
                         let h = opened.unwrap();
                         let instance = configured_jieba(h.config.dictionary.as_ref().unwrap());
@@ -288,7 +293,7 @@ mod tests {
             weak.upgrade().is_none(),
             "closed readers retained dictionary"
         );
-        let reopened = SearchHandle::open_config(&path, None, true).unwrap();
+        let reopened = SearchHandle::open_config_with_writer(&path, None, None).unwrap();
         let instance = configured_jieba(reopened.config.dictionary.as_ref().unwrap());
         assert!(!Weak::ptr_eq(&weak, &Arc::downgrade(&instance)));
         let weak = Arc::downgrade(&instance);

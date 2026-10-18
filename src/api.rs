@@ -1,31 +1,14 @@
-//! Frozen v2 C layouts. New incompatible layouts require new symbol names.
+//! C values, query preparation and owned search results.
 use super::*;
 use config::*;
 use std::collections::HashSet;
 
 #[repr(C)]
-pub struct FieldSpecV2 {
-    pub name: *const c_char,
-    pub kind: u32,
-    pub flags: u32,
-}
-#[repr(C)]
-pub struct CreateOptionsV2 {
+pub struct OpenOptions {
     pub struct_size: usize,
-    pub version: u32,
-    pub fields: *const FieldSpecV2,
-    pub field_count: usize,
-}
-#[repr(C)]
-pub struct OpenOptionsV2 {
-    pub struct_size: usize,
-    pub version: u32,
     pub mode: u32,
 }
-#[repr(C)]
-pub struct SearchOptionsV2 {
-    pub struct_size: usize,
-    pub version: u32,
+pub(super) struct QueryOptions {
     pub projection: u32,
     pub fields: *const *const c_char,
     pub field_count: usize,
@@ -33,7 +16,7 @@ pub struct SearchOptionsV2 {
     pub query_field_count: usize,
 }
 #[repr(C)]
-pub struct FieldValueV2 {
+pub struct FieldValue {
     pub name: *const c_char,
     pub kind: u32,
     pub string_value: *const c_char,
@@ -42,14 +25,14 @@ pub struct FieldValueV2 {
 }
 #[repr(C)]
 #[derive(Default)]
-pub struct HitViewV2 {
+pub struct HitView {
     pub id: *const c_char,
     pub score: f32,
     pub field_count: usize,
 }
 #[repr(C)]
 #[derive(Default)]
-pub struct ValueViewV2 {
+pub struct ValueView {
     pub name: *const c_char,
     pub kind: u32,
     pub string_value: *const c_char,
@@ -78,14 +61,7 @@ pub struct SearchResult {
     pub(super) total: Option<u64>,
 }
 
-fn version<T>(size: usize, version: u32) -> Result<()> {
-    if version != 2 || size != std::mem::size_of::<T>() {
-        return Err("unsupported options version or struct_size (expected v2 exact layout)".into());
-    }
-    Ok(())
-}
-
-// A caller must provide the complete v2 options object before this is called.
+// Non-null pointers must satisfy the public header contract.
 unsafe fn required<'a, T>(p: *const T, label: &str) -> Result<&'a T> {
     p.as_ref().ok_or_else(|| format!("null {label}"))
 }
@@ -111,70 +87,12 @@ unsafe fn output<T>(p: *mut *mut T) {
 }
 
 /// # Safety
-/// All non-null pointers must be valid, aligned, and obey the public header contract.
+/// See the public header contract.
 #[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_create_v2(
-    path: *const c_char,
-    options: *const CreateOptionsV2,
-    out: *mut *mut SearchHandle,
-    error: *mut *mut c_char,
-) -> i32 {
-    output(out);
-    boundary(error, || {
-        if out.is_null() {
-            return Err("null output handle".into());
-        }
-        let o = required(options, "create options")?;
-        version::<CreateOptionsV2>(o.struct_size, o.version)?;
-        let mut fields = Vec::new();
-        for f in array(o.fields, o.field_count, 64)? {
-            fields.push(FieldConfig {
-                name: string(f.name)?.into(),
-                kind: f.kind,
-                flags: f.flags,
-            });
-        }
-        let h = SearchHandle::open_config(string(path)?, Some(Config::new(fields)), false)?;
-        *out = Box::into_raw(Box::new(h));
-        Ok(())
-    })
-}
-
-/// # Safety
-/// See the public header contract for all v2 functions.
-#[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_open_v2(
-    path: *const c_char,
-    options: *const OpenOptionsV2,
-    out: *mut *mut SearchHandle,
-    error: *mut *mut c_char,
-) -> i32 {
-    output(out);
-    boundary(error, || {
-        if out.is_null() {
-            return Err("null output handle".into());
-        }
-        let o = required(options, "open options")?;
-        version::<OpenOptionsV2>(o.struct_size, o.version)?;
-        if !matches!(o.mode, 1 | 2) {
-            return Err("unknown open mode".into());
-        }
-        *out = Box::into_raw(Box::new(SearchHandle::open_config(
-            string(path)?,
-            None,
-            o.mode == 2,
-        )?));
-        Ok(())
-    })
-}
-
-/// # Safety
-/// See the public header contract for all v2 functions.
-#[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_upsert_v2(
+pub unsafe extern "C" fn tantivy_ohos_upsert(
     h: *mut SearchHandle,
     id: *const c_char,
-    values: *const FieldValueV2,
+    values: *const FieldValue,
     count: usize,
     error: *mut *mut c_char,
 ) -> i32 {
@@ -212,15 +130,12 @@ pub unsafe extern "C" fn tantivy_ohos_upsert_v2(
                 _ => return Err("floating-point values must be finite".into()),
             }
         }
-        if h.config == Config::legacy() && !names.contains("text") {
-            return Err("original id/text configuration requires a text value".into());
-        }
         h.replace(id, doc)
     })
 }
 
 /// # Safety
-/// See the public header contract for all v2 functions.
+/// See the public header contract.
 #[no_mangle]
 pub unsafe extern "C" fn tantivy_ohos_reload(h: *mut SearchHandle, error: *mut *mut c_char) -> i32 {
     boundary(error, || {
@@ -229,9 +144,9 @@ pub unsafe extern "C" fn tantivy_ohos_reload(h: *mut SearchHandle, error: *mut *
 }
 
 /// # Safety
-/// See the public header contract for all v2 functions.
+/// See the public header contract.
 #[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_config_json_v2(
+pub unsafe extern "C" fn tantivy_ohos_config_json(
     h: *mut SearchHandle,
     out: *mut *mut c_char,
     error: *mut *mut c_char,
@@ -248,27 +163,10 @@ pub unsafe extern "C" fn tantivy_ohos_config_json_v2(
 }
 
 impl SearchHandle {
-    unsafe fn search_v2(
-        &self,
-        query: &str,
-        limit: usize,
-        o: &SearchOptionsV2,
-    ) -> Result<SearchResult> {
-        version::<SearchOptionsV2>(o.struct_size, o.version)?;
-        if limit == 0 || limit > 1000 {
-            return Err("limit must be between 1 and 1000".into());
-        }
-        let (query, projected) = self.prepare_search(query, o)?;
-        let searcher = self.reader.searcher();
-        let docs = searcher
-            .search(&query, &TopDocs::with_limit(limit).order_by_score())
-            .map_err(|e| e.to_string())?;
-        self.materialize(&searcher, docs, projected)
-    }
     pub(super) unsafe fn prepare_search<'a>(
         &'a self,
         query: &str,
-        o: &SearchOptionsV2,
+        o: &QueryOptions,
     ) -> Result<(Box<dyn tantivy::query::Query>, Vec<&'a FieldConfig>)> {
         let schema = self.index.schema();
         let explicit = array(o.fields, o.field_count, 64)?;
@@ -433,32 +331,9 @@ impl SearchHandle {
 }
 
 /// # Safety
-/// See the public header contract for all v2 functions.
+/// See the public header contract.
 #[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_search_v2(
-    h: *mut SearchHandle,
-    query: *const c_char,
-    limit: usize,
-    options: *const SearchOptionsV2,
-    out: *mut *mut SearchResult,
-    error: *mut *mut c_char,
-) -> i32 {
-    output(out);
-    boundary(error, || {
-        if out.is_null() {
-            return Err("null result output".into());
-        }
-        let result =
-            handle(h)?.search_v2(string(query)?, limit, required(options, "search options")?)?;
-        *out = Box::into_raw(Box::new(result));
-        Ok(())
-    })
-}
-
-/// # Safety
-/// See the public header contract for all v2 functions.
-#[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_result_count_v2(
+pub unsafe extern "C" fn tantivy_ohos_result_count(
     result: *const SearchResult,
     out: *mut usize,
     error: *mut *mut c_char,
@@ -476,16 +351,16 @@ pub unsafe extern "C" fn tantivy_ohos_result_count_v2(
 }
 
 /// # Safety
-/// See the public header contract for all v2 functions.
+/// See the public header contract.
 #[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_result_hit_v2(
+pub unsafe extern "C" fn tantivy_ohos_result_hit(
     result: *const SearchResult,
     index: usize,
-    out: *mut HitViewV2,
+    out: *mut HitView,
     error: *mut *mut c_char,
 ) -> i32 {
     if !out.is_null() {
-        *out = HitViewV2::default();
+        *out = HitView::default();
     }
     boundary(error, || {
         if out.is_null() {
@@ -495,7 +370,7 @@ pub unsafe extern "C" fn tantivy_ohos_result_hit_v2(
             .hits
             .get(index)
             .ok_or("hit index out of range")?;
-        *out = HitViewV2 {
+        *out = HitView {
             id: h.id.as_ptr(),
             score: h.score,
             field_count: h.values.len(),
@@ -505,17 +380,17 @@ pub unsafe extern "C" fn tantivy_ohos_result_hit_v2(
 }
 
 /// # Safety
-/// See the public header contract for all v2 functions.
+/// See the public header contract.
 #[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_result_value_v2(
+pub unsafe extern "C" fn tantivy_ohos_result_value(
     result: *const SearchResult,
     hit: usize,
     field: usize,
-    out: *mut ValueViewV2,
+    out: *mut ValueView,
     error: *mut *mut c_char,
 ) -> i32 {
     if !out.is_null() {
-        *out = ValueViewV2::default();
+        *out = ValueView::default();
     }
     boundary(error, || {
         if out.is_null() {
@@ -526,7 +401,7 @@ pub unsafe extern "C" fn tantivy_ohos_result_value_v2(
             .get(hit)
             .ok_or("hit index out of range")?;
         let v = h.values.get(field).ok_or("value index out of range")?;
-        let mut view = ValueViewV2 {
+        let mut view = ValueView {
             name: v.name.as_ptr(),
             kind: v.kind,
             ..Default::default()
@@ -542,9 +417,9 @@ pub unsafe extern "C" fn tantivy_ohos_result_value_v2(
 }
 
 /// # Safety
-/// result must be NULL or a live result from search_v2, freed exactly once.
+/// result must be NULL or a live result from search, freed exactly once.
 #[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_free_result_v2(result: *mut SearchResult) {
+pub unsafe extern "C" fn tantivy_ohos_free_result(result: *mut SearchResult) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if !result.is_null() {
             drop(Box::from_raw(result));

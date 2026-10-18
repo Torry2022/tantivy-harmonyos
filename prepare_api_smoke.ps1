@@ -1,6 +1,5 @@
 param(
-    [string]$Destination = (Join-Path $PSScriptRoot 'build/api-v4-harmony'),
-    [ValidateSet(2, 3, 4)][int]$ApiVersion = 4
+    [string]$Destination = (Join-Path $PSScriptRoot 'build/api-harmony')
 )
 $ErrorActionPreference = 'Stop'
 $library = "$PSScriptRoot/out/aarch64-unknown-linux-ohos/libtantivy_ohos.so"
@@ -10,9 +9,9 @@ Copy-Item -LiteralPath "$PSScriptRoot/smoke/harmony" -Destination $Destination -
 $app = Join-Path $Destination 'AppScope/app.json5'
 (Get-Content -LiteralPath $app -Raw).Replace('com.torry2022.retrievalprobe', 'com.torry2022.tantivyapiprobe') | Set-Content -LiteralPath $app -Encoding utf8
 $label = Join-Path $Destination 'AppScope/resources/base/element/string.json'
-(Get-Content -LiteralPath $label -Raw).Replace('Retrieval Probe', "Tantivy API v$ApiVersion") | Set-Content -LiteralPath $label -Encoding utf8
+(Get-Content -LiteralPath $label -Raw).Replace('Retrieval Probe', 'Tantivy API') | Set-Content -LiteralPath $label -Encoding utf8
 $page = Join-Path $Destination 'entry/src/main/ets/pages/Index.ets'
-(Get-Content -LiteralPath $page -Raw).Replace('Tantivy validation', "Tantivy API v$ApiVersion validation") | Set-Content -LiteralPath $page -Encoding utf8
+(Get-Content -LiteralPath $page -Raw).Replace('Tantivy validation', 'Tantivy API validation') | Set-Content -LiteralPath $page -Encoding utf8
 $root = $PSScriptRoot.Replace('\', '/')
 $cmake = @'
 cmake_minimum_required(VERSION 3.5)
@@ -24,14 +23,11 @@ add_library(tantivy SHARED IMPORTED)
 set_target_properties(tantivy PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libs/arm64-v8a/libtantivy_ohos.so")
 add_library(tantivy_probe SHARED "${PORT_ROOT}/smoke/api_probe.cpp" "${PORT_ROOT}/smoke/@SMOKE_SOURCE@")
 set_source_files_properties("${PORT_ROOT}/smoke/@SMOKE_SOURCE@" PROPERTIES COMPILE_DEFINITIONS "main=TantivyApiSmokeMain")
-@V3_DEFINE@
 set_target_properties(tantivy_probe PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/native-output/${OHOS_ARCH}")
 target_include_directories(tantivy_probe PRIVATE "${PORT_ROOT}/include")
 target_link_libraries(tantivy_probe PRIVATE tantivy libace_napi.z.so)
 '@
-$smokeSource = if ($ApiVersion -eq 4) { 'supplement_smoke.c' } elseif ($ApiVersion -eq 3) { 'advanced_smoke.c' } else { 'tantivy_api_smoke.c' }
-$v3Define = if ($ApiVersion -eq 4) { 'target_compile_definitions(tantivy_probe PRIVATE TANTIVY_API_V4)' } elseif ($ApiVersion -eq 3) { 'target_compile_definitions(tantivy_probe PRIVATE TANTIVY_API_V3)' } else { '' }
-$cmake.Replace('@PORT_ROOT@', $root).Replace('@SMOKE_SOURCE@', $smokeSource).Replace('@V3_DEFINE@', $v3Define) | Set-Content -LiteralPath (Join-Path $Destination 'entry/src/main/cpp/CMakeLists.txt') -Encoding utf8
+$cmake.Replace('@PORT_ROOT@', $root).Replace('@SMOKE_SOURCE@', 'supplement_smoke.c') | Set-Content -LiteralPath (Join-Path $Destination 'entry/src/main/cpp/CMakeLists.txt') -Encoding utf8
 $libs = Join-Path $Destination 'entry/src/main/libs/arm64-v8a'
 New-Item -ItemType Directory -Force -Path $libs | Out-Null
 Copy-Item -LiteralPath $library -Destination $libs

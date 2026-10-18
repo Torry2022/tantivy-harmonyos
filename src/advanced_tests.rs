@@ -25,7 +25,7 @@ unsafe fn call(f: impl FnOnce(*mut *mut c_char) -> i32) -> Result<()> {
     }
 }
 fn config(dict: Option<&str>) -> J {
-    let mut j = json!({"version":3,"tokenizer":"zh_jieba_v3","fields":[
+    let mut j = json!({"tokenizer":"zh_jieba_v3","fields":[
         {"name":"title","kind":TEXT,"flags":15},{"name":"n","kind":I64,"flags":3},
         {"name":"x","kind":F64,"flags":3},{"name":"tag","kind":KEYWORD,"flags":3}],"fast_fields":["n","x","tag"]});
     if let Some(word) = dict {
@@ -36,18 +36,26 @@ fn config(dict: Option<&str>) -> J {
 }
 unsafe fn create(path: &str, j: &J) -> *mut SearchHandle {
     let mut h = ptr::null_mut();
-    call(|e| tantivy_ohos_create_v3(c(path).as_ptr(), c(&j.to_string()).as_ptr(), &mut h, e))
-        .unwrap();
+    call(|e| {
+        tantivy_ohos_create(
+            c(path).as_ptr(),
+            c(&j.to_string()).as_ptr(),
+            ptr::null(),
+            &mut h,
+            e,
+        )
+    })
+    .unwrap();
     h
 }
 unsafe fn open(path: &str, mode: u32) -> *mut SearchHandle {
     let mut h = ptr::null_mut();
-    let o = OpenOptionsV2 {
-        struct_size: std::mem::size_of::<OpenOptionsV2>(),
-        version: 2,
+    let o = OpenOptions {
+        struct_size: std::mem::size_of::<OpenOptions>(),
+
         mode,
     };
-    call(|e| tantivy_ohos_open_v2(c(path).as_ptr(), &o, &mut h, e)).unwrap();
+    call(|e| tantivy_ohos_open(c(path).as_ptr(), &o, ptr::null(), &mut h, e)).unwrap();
     h
 }
 unsafe fn put(
@@ -61,7 +69,7 @@ unsafe fn put(
     let names = [c("title"), c("n"), c("x"), c("tag")];
     let text = c(title);
     let tag = tag.map(c);
-    let mut values = vec![FieldValueV2 {
+    let mut values = vec![FieldValue {
         name: names[0].as_ptr(),
         kind: TEXT,
         string_value: text.as_ptr(),
@@ -69,7 +77,7 @@ unsafe fn put(
         f64_value: 0.0,
     }];
     if let Some(n) = n {
-        values.push(FieldValueV2 {
+        values.push(FieldValue {
             name: names[1].as_ptr(),
             kind: I64,
             string_value: ptr::null(),
@@ -78,7 +86,7 @@ unsafe fn put(
         });
     }
     if let Some(x) = x {
-        values.push(FieldValueV2 {
+        values.push(FieldValue {
             name: names[2].as_ptr(),
             kind: F64,
             string_value: ptr::null(),
@@ -87,7 +95,7 @@ unsafe fn put(
         });
     }
     if let Some(tag) = &tag {
-        values.push(FieldValueV2 {
+        values.push(FieldValue {
             name: names[3].as_ptr(),
             kind: KEYWORD,
             string_value: tag.as_ptr(),
@@ -95,35 +103,30 @@ unsafe fn put(
             f64_value: 0.0,
         });
     }
-    call(|e| tantivy_ohos_upsert_v2(h, c(id).as_ptr(), values.as_ptr(), values.len(), e)).unwrap();
+    call(|e| tantivy_ohos_upsert(h, c(id).as_ptr(), values.as_ptr(), values.len(), e)).unwrap();
 }
 unsafe fn search(h: *mut SearchHandle, request: J) -> Result<*mut SearchResult> {
     let mut r = ptr::null_mut();
-    let result = call(|e| tantivy_ohos_search_v3(h, c(&request.to_string()).as_ptr(), &mut r, e));
+    let result = call(|e| tantivy_ohos_search(h, c(&request.to_string()).as_ptr(), &mut r, e));
     if result.is_err() {
         assert!(r.is_null());
     }
     result.map(|_| r)
 }
 unsafe fn ids(h: *mut SearchHandle, query: &str) -> Vec<String> {
-    let r = search(
-        h,
-        json!({"version":3,"query":query,"limit":100,"projection":"none"}),
-    )
-    .unwrap();
+    let r = search(h, json!({"query":query,"limit":100,"projection":"none"})).unwrap();
     let mut ids = (*r)
         .hits
         .iter()
         .map(|h| h.id.to_str().unwrap().to_owned())
         .collect::<Vec<_>>();
-    tantivy_ohos_free_result_v2(r);
+    tantivy_ohos_free_result(r);
     ids.sort();
     ids
 }
 unsafe fn aggregate(h: *mut SearchHandle, request: J) -> Result<J> {
     let mut out = ptr::null_mut();
-    let status =
-        call(|e| tantivy_ohos_aggregate_v3(h, c(&request.to_string()).as_ptr(), &mut out, e));
+    let status = call(|e| tantivy_ohos_aggregate(h, c(&request.to_string()).as_ptr(), &mut out, e));
     if let Err(e) = status {
         assert!(out.is_null());
         return Err(e);
@@ -210,13 +213,16 @@ fn dictionary_changes_actual_queries_and_persists_without_external_inputs() {
                 std::fs::write(&meta, j.to_string()).unwrap();
             }
             let before = snapshot(&paths[1]);
-            let o = OpenOptionsV2 {
-                struct_size: std::mem::size_of::<OpenOptionsV2>(),
-                version: 2,
+            let o = OpenOptions {
+                struct_size: std::mem::size_of::<OpenOptions>(),
+
                 mode: 2,
             };
             let mut h = ptr::null_mut();
-            assert!(call(|e| tantivy_ohos_open_v2(c(&paths[1]).as_ptr(), &o, &mut h, e)).is_err());
+            assert!(
+                call(|e| tantivy_ohos_open(c(&paths[1]).as_ptr(), &o, ptr::null(), &mut h, e))
+                    .is_err()
+            );
             assert!(h.is_null());
             assert_eq!(before, snapshot(&paths[1]));
             std::fs::write(&meta, &original).unwrap();
@@ -314,7 +320,7 @@ fn native_fast_sort_all_matches_pagination_ties_missing_and_aggregates() {
                 });
                 let mut all = Vec::new();
                 for offset in (0..80).step_by(7) {
-                    let r=search(h,json!({"version":3,"query":"common","limit":7,"offset":offset,"projection":"none","sort":{"field":field,"order":direction}})).unwrap();
+                    let r=search(h,json!({"query":"common","limit":7,"offset":offset,"projection":"none","sort":{"field":field,"order":direction}})).unwrap();
                     let actual = (*r)
                         .hits
                         .iter()
@@ -330,9 +336,9 @@ fn native_fast_sort_all_matches_pagination_ties_missing_and_aggregates() {
                     for (i, hit) in (*r).hits.iter().enumerate() {
                         assert_eq!(hit.score, 0.0);
                         assert!(hit.values.is_empty());
-                        let mut v = ValueViewV2::default();
+                        let mut v = ValueView::default();
                         let mut present = false;
-                        call(|e| tantivy_ohos_result_sort_value_v3(r, i, &mut v, &mut present, e))
+                        call(|e| tantivy_ohos_result_sort_value(r, i, &mut v, &mut present, e))
                             .unwrap();
                         let d = &expected[offset + i];
                         assert_eq!(present, d.1.is_some());
@@ -361,7 +367,7 @@ fn native_fast_sort_all_matches_pagination_ties_missing_and_aggregates() {
                         }
                     }
                     all.extend(actual);
-                    tantivy_ohos_free_result_v2(r);
+                    tantivy_ohos_free_result(r);
                 }
                 assert_eq!(all.len(), 75);
                 println!("sort {field} {direction}: 75 expected rows across 11 pages PASS");
@@ -373,11 +379,15 @@ fn native_fast_sort_all_matches_pagination_ties_missing_and_aggregates() {
             ("x", "asc", "low"),
             ("x", "desc", "high"),
         ] {
-            let r=search(h,json!({"version":3,"query":"boundary","limit":1,"sort":{"field":field,"order":direction}})).unwrap();
+            let r = search(
+                h,
+                json!({"query":"boundary","limit":1,"sort":{"field":field,"order":direction}}),
+            )
+            .unwrap();
             assert_eq!((&(*r).hits)[0].id.to_str().unwrap(), expected);
-            tantivy_ohos_free_result_v2(r);
+            tantivy_ohos_free_result(r);
         }
-        let request = json!({"version":3,"query":"common","aggregations":{
+        let request = json!({"query":"common","aggregations":{
             "groups":{"terms":{"field":"tag","size":100,"segment_size":4096}},
             "stats":{"stats":{"field":"n"}},"floats":{"stats":{"field":"x"}},
             "ranges":{"range":{"field":"n","ranges":[{"to":0,"key":"negative"},{"from":0,"to":10,"key":"middle"},{"from":10,"key":"high"}]}}
@@ -473,23 +483,36 @@ fn native_fast_sort_all_matches_pagination_ties_missing_and_aggregates() {
 }
 
 #[test]
-fn v3_rejects_invalid_requests_and_old_indexes_without_fast_fields() {
+fn invalid_requests_and_indexes_without_fast_fields() {
     unsafe {
         let path = tests::fixture_path("v3-legacy");
-        let mut old = ptr::null_mut();
-        call(|e| tantivy_ohos_open(c(&path).as_ptr(), true, &mut old, e)).unwrap();
-        call(|e| tantivy_ohos_upsert(old, c("a").as_ptr(), c("鸿蒙").as_ptr(), e)).unwrap();
+        let old = Box::into_raw(Box::new(
+            SearchHandle::open_config_with_writer(
+                &path,
+                Some(Config::legacy()),
+                Some(writer::WriterConfig::default()),
+            )
+            .unwrap(),
+        ));
+        let text = FieldValue {
+            name: c"text".as_ptr(),
+            kind: TEXT,
+            string_value: c"鸿蒙".as_ptr(),
+            i64_value: 0,
+            f64_value: 0.0,
+        };
+        call(|e| tantivy_ohos_upsert(old, c"a".as_ptr(), &text, 1, e)).unwrap();
         call(|e| tantivy_ohos_commit(old, e)).unwrap();
         assert_eq!(ids(old, "鸿蒙"), ["a"]);
         let e = search(
             old,
-            json!({"version":3,"query":"*","limit":1,"sort":{"field":"text","order":"asc"}}),
+            json!({"query":"*","limit":1,"sort":{"field":"text","order":"asc"}}),
         )
         .unwrap_err();
         assert!(e.contains("no fast field"));
         assert!(aggregate(
             old,
-            json!({"version":3,"query":"*","aggregations":{"a":{"terms":{"field":"text"}}}})
+            json!({"query":"*","aggregations":{"a":{"terms":{"field":"text"}}}})
         )
         .unwrap_err()
         .contains("no fast field"));
@@ -499,10 +522,10 @@ fn v3_rejects_invalid_requests_and_old_indexes_without_fast_fields() {
         let h = create(&path, &config(None));
         for j in [
             json!({"version":2,"query":"*","limit":1}),
-            json!({"version":3,"query":"*","limit":0}),
-            json!({"version":3,"query":"*","limit":1,"offset":10000}),
-            json!({"version":3,"query":"*","limit":1,"sort":{"field":"unknown","order":"asc"}}),
-            json!({"version":3,"query":"*","limit":1,"sort":{"field":"n","order":"bad"}}),
+            json!({"query":"*","limit":0}),
+            json!({"query":"*","limit":1,"offset":10000}),
+            json!({"query":"*","limit":1,"sort":{"field":"unknown","order":"asc"}}),
+            json!({"query":"*","limit":1,"sort":{"field":"n","order":"bad"}}),
         ] {
             assert!(search(h, j).is_err());
         }
@@ -516,20 +539,26 @@ fn v3_rejects_invalid_requests_and_old_indexes_without_fast_fields() {
             json!({"a":{"terms":{"field":"tag"},"aggs":{}}}),
             json!({"a":{"stats":{"field":"unknown"}}}),
         ] {
-            assert!(aggregate(h, json!({"version":3,"query":"*","aggregations":aggs})).is_err());
+            assert!(aggregate(h, json!({"query":"*","aggregations":aggs})).is_err());
         }
         let mut e = ptr::null_mut();
         assert_eq!(
-            tantivy_ohos_create_v3(ptr::null(), ptr::null(), ptr::null_mut(), &mut e),
+            tantivy_ohos_create(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null_mut(),
+                &mut e
+            ),
             1
         );
         tantivy_ohos_free_string(e);
         assert_eq!(
-            tantivy_ohos_search_v3(h, ptr::null(), ptr::null_mut(), ptr::null_mut()),
+            tantivy_ohos_search(h, ptr::null(), ptr::null_mut(), ptr::null_mut()),
             1
         );
         assert_eq!(
-            tantivy_ohos_aggregate_v3(h, ptr::null(), ptr::null_mut(), ptr::null_mut()),
+            tantivy_ohos_aggregate(h, ptr::null(), ptr::null_mut(), ptr::null_mut()),
             1
         );
         tantivy_ohos_close(h);
@@ -545,9 +574,10 @@ fn v3_rejects_invalid_requests_and_old_indexes_without_fast_fields() {
                 _ => j["dictionary_fingerprint"] = json!("bad"),
             };
             let mut h = ptr::null_mut();
-            assert!(call(|e| tantivy_ohos_create_v3(
+            assert!(call(|e| tantivy_ohos_create(
                 c(&path).as_ptr(),
                 c(&j.to_string()).as_ptr(),
+                ptr::null(),
                 &mut h,
                 e
             ))
@@ -582,7 +612,7 @@ fn gapped_ranges_precision_boundaries_and_approximate_terms() {
             put(h, id, "large", Some(n), None, None);
         }
         call(|e| tantivy_ohos_commit(h, e)).unwrap();
-        let r=search(h,json!({"version":3,"query":"large","limit":10,"projection":"none","sort":{"field":"n","order":"asc"}})).unwrap();
+        let r=search(h,json!({"query":"large","limit":10,"projection":"none","sort":{"field":"n","order":"asc"}})).unwrap();
         assert_eq!(
             (*r).hits
                 .iter()
@@ -599,14 +629,14 @@ fn gapped_ranges_precision_boundaries_and_approximate_terms() {
         .into_iter()
         .enumerate()
         {
-            let mut v = ValueViewV2::default();
+            let mut v = ValueView::default();
             let mut present = false;
-            call(|e| tantivy_ohos_result_sort_value_v3(r, i, &mut v, &mut present, e)).unwrap();
+            call(|e| tantivy_ohos_result_sort_value(r, i, &mut v, &mut present, e)).unwrap();
             assert!(present);
             assert_eq!(v.i64_value, n);
         }
-        tantivy_ohos_free_result_v2(r);
-        let request = json!({"version":3,"query":"small","aggregations":{
+        tantivy_ohos_free_result(r);
+        let request = json!({"query":"small","aggregations":{
             "gaps":{"range":{"field":"n","ranges":[{"from":10,"to":15,"key":"high"},{"from":-10,"to":0,"key":"low"}]}},
             "floats":{"range":{"field":"x","ranges":[{"from":-5.0,"to":0.0},{"from":5.0,"to":7.5}]}}
         }});
@@ -631,7 +661,7 @@ fn gapped_ranges_precision_boundaries_and_approximate_terms() {
             .all(|b| b["doc_count"] == 0));
         let large = aggregate(
             h,
-            json!({"version":3,"query":"large","aggregations":{"stats":{"stats":{"field":"n"}}}}),
+            json!({"query":"large","aggregations":{"stats":{"stats":{"field":"n"}}}}),
         )
         .unwrap();
         assert_eq!(large["aggregations"]["stats"]["count"], 4);
@@ -646,16 +676,16 @@ fn gapped_ranges_precision_boundaries_and_approximate_terms() {
             json!(i64::MIN),
             json!(9007199254740992.0),
         ] {
-            assert!(aggregate(h,json!({"version":3,"query":"large","aggregations":{"r":{"range":{"field":"n","ranges":[{"from":endpoint}]}}}})).unwrap_err().contains("I64 range"));
+            assert!(aggregate(h,json!({"query":"large","aggregations":{"r":{"range":{"field":"n","ranges":[{"from":endpoint}]}}}})).unwrap_err().contains("I64 range"));
         }
-        let edge=aggregate(h,json!({"version":3,"query":"large","aggregations":{"r":{"range":{"field":"n","ranges":[{"from":9_007_199_254_740_992_i64}]}}}})).unwrap();
+        let edge=aggregate(h,json!({"query":"large","aggregations":{"r":{"range":{"field":"n","ranges":[{"from":9_007_199_254_740_992_i64}]}}}})).unwrap();
         assert_eq!(edge["aggregations"]["r"]["buckets"][0]["doc_count"], 3);
         put(h, "overflow-a", "overflow", None, Some(f64::MAX), None);
         put(h, "overflow-b", "overflow", None, Some(f64::MAX), None);
         call(|e| tantivy_ohos_commit(h, e)).unwrap();
         let error = aggregate(
             h,
-            json!({"version":3,"query":"overflow","aggregations":{"s":{"stats":{"field":"x"}}}}),
+            json!({"query":"overflow","aggregations":{"s":{"stats":{"field":"x"}}}}),
         )
         .unwrap_err();
         assert!(error.contains("overflow"), "{error}");
@@ -681,7 +711,7 @@ fn gapped_ranges_precision_boundaries_and_approximate_terms() {
             }
             call(|e| tantivy_ohos_commit(h, e)).unwrap();
         }
-        let req = |segment_size| json!({"version":3,"query":"common","aggregations":{"t":{"terms":{"field":"tag","size":1,"segment_size":segment_size}}}});
+        let req = |segment_size| json!({"query":"common","aggregations":{"t":{"terms":{"field":"tag","size":1,"segment_size":segment_size}}}});
         let exact = aggregate(h, req(10)).unwrap();
         assert_eq!(exact["aggregations"]["t"]["buckets"][0]["key"], "X");
         assert_eq!(exact["aggregations"]["t"]["buckets"][0]["doc_count"], 12);

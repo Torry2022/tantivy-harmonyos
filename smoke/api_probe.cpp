@@ -29,13 +29,7 @@ static napi_value Run(napi_env env, napi_callback_info info) {
     char name[] = "tantivy_api_smoke";
     char* argv[] = {name, path.data(), phase.data()};
     const int code = TantivyApiSmokeMain(3, argv);
-#ifdef TANTIVY_API_V4
-    const std::string prefix = "Tantivy API v4 ";
-#elif defined(TANTIVY_API_V3)
-    const std::string prefix = "Tantivy API v3 ";
-#else
-    const std::string prefix = "Tantivy API v2 ";
-#endif
+    const std::string prefix = "Tantivy API ";
     const std::string result = prefix + phase + ": " + (code == 0 ? "PASS\n" : "FAIL\n");
     std::fflush(stdout); std::fflush(stderr);
     std::ofstream(root + "/report-api-" + phase + ".txt") << result;

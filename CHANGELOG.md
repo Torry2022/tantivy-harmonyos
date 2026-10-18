@@ -2,16 +2,16 @@
 
 ## Unreleased
 
-- Add a unified host regression and compatibility runner, Linux CI, and a CMake project for the C/C++ examples.
-- Add release ZIP consistency checks and document build, compatibility and contribution requirements.
-- No search API, index format or binary release changes.
+- Consolidate creation, opening, typed writes, search and aggregations into one C interface. Retire the numbered APIs; callers must update their code and rebuild with the matching library/header.
+- Add per-handle writer worker count and total memory budget. Defaults remain one worker and 15000000 bytes; saved index formats are unchanged.
+- Provide current C/C++ consumers and Linux CI with functional, export, package and read-only checks.
+- Rewrite both READMEs around building and integrating the SDK.
 
-## v0.26.2-ohos.2
+## v0.26.2-ohos.2 (retired interface)
 
-- Add configurable typed fields, projections, read-only handles, pagination and exact hit counts.
-- Add persisted Jieba dictionary extensions, field sorting and common aggregations.
-- Preserve earlier C interfaces and indexes; share identical immutable dictionaries between readers.
+- Configurable typed fields, persisted dictionary extensions, field sorting, aggregations, projections, pagination and exact counts.
+- Shared immutable dictionaries and ID-only search optimization.
 
-## v0.26.2-ohos.1
+## v0.26.2-ohos.1 (retired interface)
 
-- Initial HarmonyOS arm64 build with a C interface for persistent Chinese full-text search.
+- Initial HarmonyOS arm64 library for persistent Chinese full-text search.

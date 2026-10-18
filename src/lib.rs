@@ -1,30 +1,28 @@
 mod advanced;
 mod api;
 pub use advanced::*;
+#[cfg(test)]
+mod advanced_tests;
 mod config;
 mod readonly;
 #[cfg(test)]
+mod search_tests;
+#[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod tests_v2;
-#[cfg(test)]
-mod tests_v3;
-#[cfg(test)]
-mod tests_v4;
 mod tokenizer;
+mod writer;
+#[cfg(test)]
+mod writer_tests;
 pub use api::*;
+pub use writer::*;
 
-use serde::Serialize;
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::ptr;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-use tantivy::schema::{
-    Field, IndexRecordOption, Schema, TantivyDocument, TextFieldIndexing, TextOptions, Value,
-    STORED, STRING,
-};
+use tantivy::schema::{Field, Schema, TantivyDocument, Value};
 use tantivy::tokenizer::{LowerCaser, TextAnalyzer};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
@@ -43,39 +41,17 @@ pub struct SearchHandle {
     writer: Option<IndexWriter>,
     config: config::Config,
     id: Field,
-    text: Field,
     #[cfg(test)]
     docstore_reads: std::cell::Cell<usize>,
 }
 
-#[derive(Serialize)]
-struct Hit {
-    id: String,
-    text: String,
-    score: f32,
-}
-
-fn schema() -> Schema {
-    let mut builder = Schema::builder();
-    builder.add_text_field("id", STRING | STORED);
-    builder.add_text_field(
-        "text",
-        TextOptions::default().set_stored().set_indexing_options(
-            TextFieldIndexing::default()
-                .set_tokenizer("zh_jieba_v1")
-                .set_index_option(IndexRecordOption::WithFreqsAndPositions),
-        ),
-    );
-    builder.build()
-}
-
 impl SearchHandle {
-    fn open(path: &str, create: bool) -> Result<Self> {
-        let h = Self::open_config(path, create.then(config::Config::legacy), false)?;
-        h.require_legacy()?;
-        Ok(h)
-    }
-    fn open_config(path: &str, create: Option<config::Config>, read_only: bool) -> Result<Self> {
+    fn open_config_with_writer(
+        path: &str,
+        create: Option<config::Config>,
+        writer_config: Option<writer::WriterConfig>,
+    ) -> Result<Self> {
+        let read_only = writer_config.is_none();
         let (index, config) = if let Some(config) = create {
             let expected = config.schema()?;
             // Create only in a new directory; never overwrite another index.
@@ -110,15 +86,14 @@ impl SearchHandle {
             );
         }
         let id = index.schema().get_field("id").map_err(|e| e.to_string())?;
-        let text = index.schema().get_field("text").unwrap_or(id);
-        let writer = if read_only {
-            None
-        } else {
+        let writer = if let Some(settings) = writer_config {
             Some(
                 index
-                    .writer_with_num_threads(1, 15_000_000)
+                    .writer_with_num_threads(settings.num_threads, settings.memory_budget_bytes)
                     .map_err(|e| e.to_string())?,
             )
+        } else {
+            None
         };
         let reader = index
             .reader_builder()
@@ -131,28 +106,9 @@ impl SearchHandle {
             writer,
             config,
             id,
-            text,
             #[cfg(test)]
             docstore_reads: std::cell::Cell::new(0),
         })
-    }
-    fn upsert(&mut self, id: &str, text: &str) -> Result<()> {
-        self.require_legacy()?;
-        if id.is_empty() {
-            return Err("document id must not be empty".into());
-        }
-        let mut doc = TantivyDocument::default();
-        doc.add_text(self.id, id);
-        doc.add_text(self.text, text);
-        self.replace(id, doc)
-    }
-    fn require_legacy(&self) -> Result<()> {
-        if self.config != config::Config::legacy() {
-            return Err(
-                "legacy text API requires the original id/text configuration; use v2".into(),
-            );
-        }
-        Ok(())
     }
     fn writer(&mut self) -> Result<&mut IndexWriter> {
         self.writer
@@ -182,38 +138,6 @@ impl SearchHandle {
     fn commit(&mut self) -> Result<()> {
         self.writer()?.commit().map_err(|e| e.to_string())?;
         self.reader.reload().map_err(|e| e.to_string())
-    }
-    fn search(&self, query: &str, limit: usize) -> Result<String> {
-        self.require_legacy()?;
-        if limit == 0 || limit > 1000 {
-            return Err("limit must be between 1 and 1000".into());
-        }
-        let mut parser = QueryParser::for_index(&self.index, vec![self.text]);
-        parser.set_conjunction_by_default();
-        let query = parser.parse_query(query).map_err(|e| e.to_string())?;
-        let searcher = self.reader.searcher();
-        let docs = searcher
-            .search(&query, &TopDocs::with_limit(limit).order_by_score())
-            .map_err(|e| e.to_string())?;
-        let mut hits = Vec::with_capacity(docs.len());
-        for (score, address) in docs {
-            finite_score(score)?;
-            let doc: TantivyDocument = searcher.doc(address).map_err(|e| e.to_string())?;
-            hits.push(Hit {
-                id: doc
-                    .get_first(self.id)
-                    .and_then(|v| v.as_str())
-                    .ok_or("missing stored id")?
-                    .to_owned(),
-                text: doc
-                    .get_first(self.text)
-                    .and_then(|v| v.as_str())
-                    .ok_or("missing stored text")?
-                    .to_owned(),
-                score,
-            });
-        }
-        serde_json::to_string(&hits).map_err(|e| e.to_string())
     }
 }
 
@@ -254,44 +178,6 @@ fn boundary(error: *mut *mut c_char, operation: impl FnOnce() -> Result<()>) -> 
     }
 }
 
-#[no_mangle]
-pub extern "C" fn tantivy_ohos_abi_version() -> u32 {
-    4
-}
-
-/// # Safety
-/// Non-null pointers must be valid; out and error must point to writable pointer slots.
-#[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_open(
-    path: *const c_char,
-    create: bool,
-    out: *mut *mut SearchHandle,
-    error: *mut *mut c_char,
-) -> i32 {
-    if !out.is_null() {
-        *out = ptr::null_mut();
-    }
-    boundary(error, || {
-        if out.is_null() {
-            return Err("null output handle".into());
-        }
-        *out = Box::into_raw(Box::new(SearchHandle::open(string(path)?, create)?));
-        Ok(())
-    })
-}
-
-/// # Safety
-/// h must be a live, exclusively accessed handle; strings and error must be valid.
-#[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_upsert(
-    h: *mut SearchHandle,
-    id: *const c_char,
-    text: *const c_char,
-    error: *mut *mut c_char,
-) -> i32 {
-    boundary(error, || handle(h)?.upsert(string(id)?, string(text)?))
-}
-
 /// # Safety
 /// h must be a live, exclusively accessed handle; id and error must be valid.
 #[no_mangle]
@@ -308,29 +194,6 @@ pub unsafe extern "C" fn tantivy_ohos_delete(
 #[no_mangle]
 pub unsafe extern "C" fn tantivy_ohos_commit(h: *mut SearchHandle, error: *mut *mut c_char) -> i32 {
     boundary(error, || handle(h)?.commit())
-}
-
-/// # Safety
-/// h must be live and exclusive; query, out_json and error must be valid.
-#[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_search(
-    h: *mut SearchHandle,
-    query: *const c_char,
-    limit: usize,
-    out_json: *mut *mut c_char,
-    error: *mut *mut c_char,
-) -> i32 {
-    if !out_json.is_null() {
-        *out_json = ptr::null_mut();
-    }
-    boundary(error, || {
-        if out_json.is_null() {
-            return Err("null JSON output".into());
-        }
-        let json = handle(h)?.search(string(query)?, limit)?;
-        *out_json = CString::new(json).map_err(|e| e.to_string())?.into_raw();
-        Ok(())
-    })
 }
 
 /// # Safety

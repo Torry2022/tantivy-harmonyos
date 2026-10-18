@@ -21,7 +21,7 @@ class PackageChecks(unittest.TestCase):
             "source/Cargo.lock", "source/examples/basic.c", "source/examples/basic.cpp",
             "licenses/dependency/LICENSE"]}
         self.files["lib/arm64-v8a/libtantivy_ohos.so"] = lib
-        self.files["BUILD-MANIFEST.json"] = json.dumps({"abi_version": 4,
+        self.files["BUILD-MANIFEST.json"] = json.dumps({"interface": "unified",
             "target": "aarch64-unknown-linux-ohos", "source_commit": "fixture",
             "library_sha256": hashlib.sha256(lib).hexdigest()}).encode()
 
@@ -42,6 +42,14 @@ class PackageChecks(unittest.TestCase):
     def test_corruption_fails(self):
         self.write(corrupt=True)
         with self.assertRaisesRegex(ValueError, "Checksum mismatch"):
+            validate(self.path)
+
+    def test_unknown_interface(self):
+        manifest = json.loads(self.files["BUILD-MANIFEST.json"])
+        manifest["interface"] = "unknown"
+        self.files["BUILD-MANIFEST.json"] = json.dumps(manifest).encode()
+        self.write()
+        with self.assertRaisesRegex(ValueError, "interface"):
             validate(self.path)
 
     def test_missing_header_fails_even_with_valid_checksums(self):

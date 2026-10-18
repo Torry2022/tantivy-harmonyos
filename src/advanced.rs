@@ -1,6 +1,6 @@
-//! Additive v3 functions. The v2 C layouts remain frozen.
+//! Search, sorting, aggregations and index creation configuration.
 use super::*;
-use api::{StoredValue, ValueViewV2};
+use api::{StoredValue, ValueView};
 use config::*;
 use serde::Deserialize;
 use serde_json::{json, Value as Json};
@@ -19,56 +19,40 @@ fn cstring(s: &str) -> Result<CString> {
     CString::new(s).map_err(|e| e.to_string())
 }
 
-/// # Safety
-/// Same ownership, serialization and pointer rules as v2; config_json is UTF-8.
-#[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_create_v3(
-    path: *const c_char,
-    config_json: *const c_char,
-    out: *mut *mut SearchHandle,
-    error: *mut *mut c_char,
-) -> i32 {
-    if !out.is_null() {
-        *out = ptr::null_mut();
+pub(super) fn creation_config(json: &str) -> Result<Config> {
+    let mut request: Json = decode(json, 2_097_152)?;
+    let object = request
+        .as_object_mut()
+        .ok_or("configuration must be an object")?;
+    if object.contains_key("version") {
+        return Err("version is an index metadata field, not a creation option".into());
     }
-    boundary(error, || {
-        if out.is_null() {
-            return Err("null output handle".into());
-        }
-        let mut config: Config = decode(string(config_json)?, 2_097_152)?;
-        if config.version != 3 {
-            return Err("create_v3 requires config version 3".into());
-        }
-        // Creation defaults are intentionally separate from metadata loading.
-        config.fast_id = Some(config.fast_id.unwrap_or(true));
-        if config.dictionary.is_none() {
-            config.dictionary = Some(Dictionary {
-                mode: "extend_default".into(),
-                entries: Vec::new(),
-            });
-        }
-        let fingerprint = config.fingerprint()?;
-        if config
-            .dictionary_fingerprint
-            .as_ref()
-            .is_some_and(|f| *f != fingerprint)
-        {
-            return Err("dictionary fingerprint mismatch".into());
-        }
-        config.dictionary_fingerprint = Some(fingerprint);
-        *out = Box::into_raw(Box::new(SearchHandle::open_config(
-            string(path)?,
-            Some(config),
-            false,
-        )?));
-        Ok(())
-    })
+    object.insert("version".into(), json!(3));
+    object.entry("tokenizer").or_insert(json!("zh_jieba_v3"));
+    let mut config: Config = serde_json::from_value(request).map_err(|e| e.to_string())?;
+    // Creation defaults are intentionally separate from metadata loading.
+    config.fast_id = Some(config.fast_id.unwrap_or(true));
+    if config.dictionary.is_none() {
+        config.dictionary = Some(Dictionary {
+            mode: "extend_default".into(),
+            entries: Vec::new(),
+        });
+    }
+    let fingerprint = config.fingerprint()?;
+    if config
+        .dictionary_fingerprint
+        .as_ref()
+        .is_some_and(|f| *f != fingerprint)
+    {
+        return Err("dictionary fingerprint mismatch".into());
+    }
+    config.dictionary_fingerprint = Some(fingerprint);
+    Ok(config)
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SearchRequest {
-    version: u32,
     query: String,
     limit: usize,
     #[serde(default)]
@@ -103,17 +87,16 @@ impl SearchHandle {
             .find(|f| f.name == name)
             .ok_or_else(|| format!("unknown field: {name}"))?;
         if !self.config.fast_fields.iter().any(|s| s == name) {
-            return Err(format!("field {name} has no fast field; create a new index with v3 fast_fields (no in-place migration)"));
+            return Err(format!("field {name} has no fast field; create a new index with fast_fields (no in-place migration)"));
         }
         Ok(spec)
     }
     fn advanced_search(&self, request: SearchRequest) -> Result<SearchResult> {
         let r = request;
-        if r.version != 3
-            || !(1..=1000).contains(&r.limit)
+        if !(1..=1000).contains(&r.limit)
             || r.offset.checked_add(r.limit).is_none_or(|n| n > 10_000)
         {
-            return Err("search requires version 3, limit 1..1000 and offset+limit <=10000".into());
+            return Err("search requires limit 1..1000 and offset+limit <=10000".into());
         }
         let fields = r
             .fields
@@ -127,9 +110,7 @@ impl SearchHandle {
             .collect::<Result<Vec<_>>>()?;
         let fp: Vec<_> = fields.iter().map(|s| s.as_ptr()).collect();
         let qp: Vec<_> = queries.iter().map(|s| s.as_ptr()).collect();
-        let options = SearchOptionsV2 {
-            struct_size: std::mem::size_of::<SearchOptionsV2>(),
-            version: 2,
+        let options = api::QueryOptions {
             projection: match r.projection.as_str() {
                 "default" => 0,
                 "none" => 1,
@@ -247,9 +228,9 @@ fn collect_page<C: tantivy::collector::Collector>(
 }
 
 /// # Safety
-/// See v2 result ownership and pointer rules. exact=false means not requested.
+/// See result ownership and pointer rules. exact=false means not requested.
 #[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_result_total_v4(
+pub unsafe extern "C" fn tantivy_ohos_result_total(
     result: *const SearchResult,
     total: *mut u64,
     exact: *mut bool,
@@ -275,9 +256,9 @@ pub unsafe extern "C" fn tantivy_ohos_result_total_v4(
 }
 
 /// # Safety
-/// See v2 pointer and ownership contract. Returns the existing opaque result type.
+/// See pointer and ownership contract. Returns the existing opaque result type.
 #[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_search_v3(
+pub unsafe extern "C" fn tantivy_ohos_search(
     h: *mut SearchHandle,
     request_json: *const c_char,
     out: *mut *mut SearchResult,
@@ -297,17 +278,17 @@ pub unsafe extern "C" fn tantivy_ohos_search_v3(
 }
 
 /// # Safety
-/// Borrowed value strings live until free_result_v2. A relevance result has no sort value.
+/// Borrowed value strings live until free_result. A relevance result has no sort value.
 #[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_result_sort_value_v3(
+pub unsafe extern "C" fn tantivy_ohos_result_sort_value(
     result: *const SearchResult,
     hit: usize,
-    out: *mut ValueViewV2,
+    out: *mut ValueView,
     present: *mut bool,
     error: *mut *mut c_char,
 ) -> i32 {
     if !out.is_null() {
-        *out = ValueViewV2::default();
+        *out = ValueView::default();
     }
     if !present.is_null() {
         *present = false;
@@ -322,7 +303,7 @@ pub unsafe extern "C" fn tantivy_ohos_result_sort_value_v3(
             .sort
             .as_ref()
             .ok_or("relevance result has no field sort value")?;
-        let mut v = ValueViewV2 {
+        let mut v = ValueView {
             name: name.as_ptr(),
             kind: *kind,
             ..Default::default()
@@ -343,7 +324,6 @@ pub unsafe extern "C" fn tantivy_ohos_result_sort_value_v3(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AggregateRequest {
-    version: u32,
     query: String,
     aggregations: serde_json::Map<String, Json>,
     #[serde(default = "default_memory")]
@@ -376,8 +356,8 @@ fn positive(v: Option<&Json>, default: u64, max: u64) -> Result<u64> {
 }
 impl SearchHandle {
     fn aggregate(&self, mut r: AggregateRequest) -> Result<String> {
-        if r.version != 3 || r.aggregations.is_empty() || r.aggregations.len() > 16 {
-            return Err("aggregation requires version 3 and 1..16 flat named aggregations".into());
+        if r.aggregations.is_empty() || r.aggregations.len() > 16 {
+            return Err("aggregation requires 1..16 flat named aggregations".into());
         }
         if r.memory_limit_bytes == 0
             || r.memory_limit_bytes > default_memory()
@@ -558,14 +538,13 @@ impl SearchHandle {
             }
             result[&name]["buckets"] = json!(selected);
         }
-        serde_json::to_string(&json!({"version":3,"aggregations":result}))
-            .map_err(|e| e.to_string())
+        serde_json::to_string(&json!({"aggregations":result})).map_err(|e| e.to_string())
     }
 }
 /// # Safety
-/// Returned UTF-8 JSON and errors use free_string. Same handle contract as v2.
+/// Returned UTF-8 JSON and errors use free_string. See the public handle contract.
 #[no_mangle]
-pub unsafe extern "C" fn tantivy_ohos_aggregate_v3(
+pub unsafe extern "C" fn tantivy_ohos_aggregate(
     h: *mut SearchHandle,
     request_json: *const c_char,
     out: *mut *mut c_char,

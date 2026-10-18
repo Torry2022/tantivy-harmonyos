@@ -1,4 +1,4 @@
-"""Host regression, frozen C ABI, and published-index compatibility checks.
+"""Host functional checks and external C/C++ SDK consumers.
 
 Requires Python 3.12+, Rust 1.90.0, CMake, Ninja and a GNU/Clang C/C++ toolchain.
 No retries. Each invocation retains logs, fixtures and a report under build/.
@@ -12,35 +12,9 @@ import re
 import shutil
 import subprocess
 import sys
-import tarfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-BASELINES = {
-    "abi1": "29c0379fcf1f6df0db38a84979487d0fe3b03ba1",
-    "abi4": "20851205341fb12cb44db89c0656fe9800042a6f",
-}
-
-
-def header_contract(text):
-    """Freeze declarations, not comments or source formatting."""
-    text = re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.S)
-    declarations = re.findall(
-        r"typedef\s+struct\s*\{[^}]*\}\s*\w+\s*;|"
-        r"typedef\s+struct\s+\w+\s+\w+\s*;|"
-        r"(?:int|void|uint32_t)\s+tantivy_ohos_\w+\s*\([^;]*?\)\s*;|"
-        r"#define[ \t]+TANTIVY_OHOS_\w+[ \t]+[^\n]+", text)
-    def normalize(value):
-        return re.sub(r"\s*([*{},();])\s*", r"\1", " ".join(value.split()))
-    return sorted(normalize(value) for value in declarations)
-
-
-def check_contract(text, frozen):
-    missing = set(frozen) - set(header_contract(text))
-    if missing:
-        raise ValueError("Changed/removed frozen declarations:\n" + "\n".join(sorted(missing)))
-
-
 def snapshot(directory):
     return {p.relative_to(directory).as_posix(): {
         "size": p.stat().st_size, "mtime_ns": p.stat().st_mtime_ns,
@@ -65,7 +39,7 @@ def main():
         parser.error("This runner currently covers Linux and Windows GNU hosts")
     run = ROOT / "build" / ("check-" + time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}")
     run.mkdir(parents=True, exist_ok=False)
-    report = {"platform": sys.platform, "baselines": BASELINES, "commands": [], "passed": False}
+    report = {"platform": sys.platform, "commands": [], "passed": False}
     env = os.environ.copy()
     target = ROOT / "build" / "check-target"
     env["CARGO_TARGET_DIR"] = str(target)
@@ -92,8 +66,6 @@ def main():
             record["seconds"] = round(time.monotonic() - started, 3)
 
     def library(source, label):
-        # Cargo root-package fingerprints can collide between archived workspaces
-        # with identical package names/versions. Keep each baseline independent.
         env["CARGO_TARGET_DIR"] = str(target / (label + "-" + host))
         command(["cargo", "+" + toolchain, "build", "--locked", "--release", "--lib",
                  "--target", host, "-j", args.jobs], cwd=source)
@@ -102,12 +74,6 @@ def main():
         destination.mkdir(parents=True)
         shutil.copy2(Path(env["CARGO_TARGET_DIR"]) / host / "release" / name, destination / name)
         return destination / name
-
-    def compile_consumer(source, header, lib, name):
-        executable = run / (name + (".exe" if windows else ""))
-        command([args.cc, "-std=c99", "-Wall", "-Wextra", "-Werror",
-                 "-I", header, source, "-L", lib.parent, "-l:" + lib.name, "-o", executable])
-        return executable
 
     try:
         required = [args.cc, args.cxx, args.cmake, "ninja", "git", "cargo", "rustc",
@@ -122,34 +88,7 @@ def main():
         if windows and not host.endswith("windows-gnu"):
             raise RuntimeError("Windows checks require the GNU Rust toolchain")
         report["host"] = host
-        frozen = json.loads((ROOT / "tests/abi4-contract.json").read_text(encoding="utf-8"))
-        check_contract((ROOT / "include/tantivy_ohos.h").read_text(encoding="utf-8"),
-                       frozen["declarations"])
         command([sys.executable, "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py"])
-        historical = {}
-        for name, revision in BASELINES.items():
-            source = run / name
-            source.mkdir()
-            archive = run / f"{name}.tar"
-            # A full Git checkout supplies pinned sources; there is no remote fetch.
-            command(["git", "-c", "core.autocrlf=false", "archive", "--format=tar",
-                     f"--output={archive}", revision])
-            with tarfile.open(archive) as tar:
-                tar.extractall(source, filter="data")
-            if name == "abi4":
-                original = (source / "include/tantivy_ohos.h").read_bytes()
-                if hashlib.sha256(original).hexdigest() != frozen["header_sha256"]:
-                    raise RuntimeError("Frozen header provenance mismatch")
-            lib = library(source, name)
-            report[name + "_library_sha256"] = hashlib.sha256(lib.read_bytes()).hexdigest()
-            consumer_source = ROOT / "tests" / ("legacy_abi.c" if name == "abi1" else "compat_v4.c")
-            exe = compile_consumer(consumer_source, source / "include", lib, name + "-consumer")
-            index = run / (name + "-index")
-            command([exe, index, "create"], runtime=lib.parent)
-            command([exe, index, "read"], runtime=lib.parent)
-            historical[name] = (exe, index)
-
-        # Build and test the candidate only after historical artifacts have been copied.
         env["CARGO_TARGET_DIR"] = str(target / ("candidate-" + host))
         command(["cargo", "+" + toolchain, "test", "--locked", "--release", "--target", host,
                  "-j", args.jobs])
@@ -177,28 +116,20 @@ def main():
         for example in ["basic_c", "basic_cpp", "advanced"]:
             exe = examples / (example + (".exe" if windows else ""))
             command([exe, run / (example + "-index")], runtime=candidate.parent)
-        current_reader = compile_consumer(ROOT / "tests/compat_v4.c", ROOT / "include",
-                                          candidate, "current-reader")
-        for name, (_, index) in historical.items():
-            before = snapshot(index)
-            command([current_reader, index, "read-legacy" if name == "abi1" else "read"],
-                    runtime=candidate.parent)
-            after = snapshot(index)
-            if after != before:
-                raise RuntimeError(f"Readonly access changed {name} index files")
-            (run / (name + "-readonly.json")).write_text(json.dumps(after, indent=2) + "\n")
-        for name, (exe, index) in historical.items():
-            # First prove readonly access to untouched old indexes above. ABI 1's
-            # original reader below uses read/write open; it must not mask upgrades.
-            # Do not relink/recompile: change only the loaded shared library.
-            before = snapshot(index)
-            binary_hash = hashlib.sha256(exe.read_bytes()).hexdigest()
-            command([exe, index, "read"], runtime=candidate.parent)
-            if name == "abi4" and snapshot(index) != before:
-                raise RuntimeError("ABI 4 readonly compatibility check modified index files")
-            report[name + "_consumer_sha256"] = hashlib.sha256(exe.read_bytes()).hexdigest()
-            if report[name + "_consumer_sha256"] != binary_hash:
-                raise RuntimeError("Frozen consumer executable changed")
+        writer_example = examples / ("writer_options" + (".exe" if windows else ""))
+        writer_index = run / "writer-options-index"
+        for phase in ["create", "reopen", "readonly"]:
+            before = snapshot(writer_index) if phase == "readonly" else None
+            command([writer_example, writer_index, phase], runtime=candidate.parent)
+            if before is not None and snapshot(writer_index) != before:
+                raise RuntimeError("Readonly writer-options check changed index files")
+        acceptance = examples / ("acceptance" + (".exe" if windows else ""))
+        acceptance_index = run / "acceptance-index"
+        for phase in ["create", "reopen", "readonly"]:
+            before = snapshot(acceptance_index) if phase == "readonly" else None
+            command([acceptance, acceptance_index, phase], runtime=candidate.parent)
+            if before is not None and snapshot(acceptance_index) != before:
+                raise RuntimeError("Readonly acceptance changed index files")
         report["passed"] = True
     except Exception as error:
         report["error"] = str(error)
