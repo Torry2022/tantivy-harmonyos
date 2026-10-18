@@ -44,9 +44,11 @@ int main(int argc, char** argv) {
     TRY(tantivy_ohos_reload(reader, &error));
     TRY(tantivy_ohos_search_v2(reader, "检索", 10, &search, &result, &error));
     TRY(tantivy_ohos_result_count_v2(result, &count, &error));
+    if (count != 1) goto fail;
     for (size_t i = 0; i < count; ++i) {
         tantivy_ohos_hit_view_v2 hit = {0};
         TRY(tantivy_ohos_result_hit_v2(result, i, &hit, &error));
+        if (hit.field_count != 0) goto fail;
         printf("id=%s score=%g fields=%zu\n", hit.id, (double)hit.score, hit.field_count);
     }
     tantivy_ohos_free_result_v2(result); result = NULL;
@@ -55,9 +57,11 @@ int main(int argc, char** argv) {
     TRY(tantivy_ohos_search_v2(reader, "category:Guide AND year:[2020 TO 2026]", 10,
         &search, &result, &error));
     TRY(tantivy_ohos_result_count_v2(result, &count, &error));
+    if (count != 1) goto fail;
     for (size_t i = 0; i < count; ++i) {
         tantivy_ohos_hit_view_v2 hit = {0};
         TRY(tantivy_ohos_result_hit_v2(result, i, &hit, &error));
+        if (hit.field_count != 4) goto fail;
         for (size_t j = 0; j < hit.field_count; ++j) {
             tantivy_ohos_value_view_v2 v = {0};
             TRY(tantivy_ohos_result_value_v2(result, i, j, &v, &error));

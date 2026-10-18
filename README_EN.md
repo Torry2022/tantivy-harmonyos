@@ -33,6 +33,8 @@ Keep indexes in the application sandbox. Obtain `filesDir` in ArkTS and pass it 
 
 See the complete compilable [C](examples/basic.c) and [C++](examples/basic.cpp) examples. Each takes a new index path and never deletes an existing index.
 
+The [CMake example project](examples/CMakeLists.txt) in this repository accepts a downloaded SDK: `cmake -S <repository>/examples -B build-consumer -DTANTIVY_SDK_ROOT=<extracted-sdk>`, then `cmake --build build-consumer`. OHOS cross-compilation additionally requires the Native SDK toolchain file; run the executables on the matching target system. For host test libraries, set `TANTIVY_LIBRARY` and `TANTIVY_INCLUDE_DIR` separately and make the library directory available to the runtime loader.
+
 ## Fields and queries
 
 Every index has an implicit `id`: a nonempty, case-sensitive exact string, always stored and indexed. Configure up to 64 additional single-valued fields with unique case-sensitive names matching `[A-Za-z][A-Za-z0-9_]{0,63}`; `id` is reserved.
@@ -158,9 +160,11 @@ The script uses the lockfile and two parallel jobs by default. It writes a match
 
 See [dictionary sharing and hardware validation](VALIDATION_SHARED_JIEBA.md), [ABI 4 supplementary validation](VALIDATION_API_V4_SUPPLEMENT.md), [earlier ABI 4 validation](VALIDATION_API_V4.md), the [public SDK Chinese benchmark protocol](benchmarks/README.md), [v3 capability validation](VALIDATION_API_V3.md) and [ABI 2 validation](VALIDATION_API_V2.md) for actual commands, results and remaining checks. [Historical ABI 1 validation](VALIDATION.md) applies only to its original artifacts and is not device validation of later ABIs.
 
-Windows host tests have encountered intermittent index commit failures (system error 5). Native calls to official Tantivy can also reproduce the same class of error; the root cause remains unknown.
+Windows host tests have encountered denied index-metadata file replacements (system error 5). Captures show replacement failing while security software holds the file; native calls to official Tantivy also reproduce the issue. This does not establish one cause for every such error. Tests do not retry or ignore failures.
 
 See the [validation record](VALIDATION_SHARED_JIEBA.md) for hardware functional checks of the interfaces added in ABI 3/4 and the scope of performance and memory measurements.
+
+Run `python tools/check.py` for host regression and historical library/consumer compatibility checks. It needs Python 3.12+, Rust 1.90.0, CMake, Ninja and full Git history; see [Contributing](CONTRIBUTING.md) for tool requirements. Host checks do not replace HarmonyOS device validation. See [compatibility and support](docs/COMPATIBILITY.md) for version meanings and tested scope; a minimum supported system version has not been established. Changes are listed in the [Changelog](CHANGELOG.md).
 
 To validate the new API inside an application, run `./prepare_api_smoke.ps1` and open the generated `build/api-v4-harmony` in DevEco. It uses the independent bundle `com.torry2022.tantivyapiprobe`. Configure a debug Profile matching that bundle and device; it can use an existing debug certificate and key. The generator refuses to overwrite an existing project. See the validation record for v4 create/reopen/readonly stages. Generate the original v2 test project with `-ApiVersion 2 -Destination <new-directory>`.
 

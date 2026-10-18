@@ -33,6 +33,8 @@ target_link_libraries(entry PRIVATE tantivy_ohos)
 
 完整、可编译的最小示例见 [C](examples/basic.c) 和 [C++](examples/basic.cpp)。示例的参数是新的索引目录，不会删除已有索引。
 
+本仓库的 [CMake 示例工程](examples/CMakeLists.txt) 可搭配下载的 SDK 使用：`cmake -S <仓库目录>/examples -B build-consumer -DTANTIVY_SDK_ROOT=<解压后的包目录>`，再运行 `cmake --build build-consumer`。鸿蒙交叉构建时还需指定 Native SDK 的 toolchain 文件；生成的程序应在匹配的目标系统运行。宿主测试库可分别通过 `TANTIVY_LIBRARY`、`TANTIVY_INCLUDE_DIR` 指定，运行时需让动态加载器找到库目录。
+
 ## 字段和查询
 
 每个索引都有内置的 `id`：非空、区分大小写的精确字符串，始终建立索引并保存。可配置最多 64 个额外的单值字段，字段名为 `[A-Za-z][A-Za-z0-9_]{0,63}`，不能重复或使用 `id`。
@@ -158,9 +160,11 @@ $env:RUSTUP_TOOLCHAIN = '1.90.0-x86_64-pc-windows-gnu'
 
 实际命令、结果与验证范围见[词典共享与真机验证](VALIDATION_SHARED_JIEBA.md)、[ABI 4 补充验证](VALIDATION_API_V4_SUPPLEMENT.md)、[早期 ABI 4 验证](VALIDATION_API_V4.md)、[公共 SDK 中文基准说明](benchmarks/README.md)、[v3 能力验证](VALIDATION_API_V3.md) 和 [ABI 2 验证记录](VALIDATION_API_V2.md)。[历史 ABI 1 记录](VALIDATION.md) 中的真机结果仅适用于当时的产物，不能代替后续 ABI 的设备验证。
 
-Windows 宿主测试中存在间歇性的索引提交错误（系统错误 5），官方 Tantivy 原生调用也能复现同类错误，根因尚未确定。
+Windows 宿主测试曾出现索引元数据文件替换被拒绝（系统错误 5）；已捕获到安全软件占用文件期间替换失败，官方 Tantivy 原生调用也可复现。这不代表所有同类错误均有相同原因；测试不会自动重试或忽略失败。
 
 ABI 3/4 新增接口的真机功能检查，以及性能与内存测量的适用范围，见[验证记录](VALIDATION_SHARED_JIEBA.md)。
+
+维护与回归使用 `python tools/check.py`，需要 Python 3.12+、Rust 1.90.0、CMake、Ninja 和完整 Git 历史，具体工具要求见[贡献指南](CONTRIBUTING.md)。它运行宿主测试及旧库/旧调用程序兼容检查，不能替代鸿蒙设备验证。版本含义、已验证环境和索引兼容范围见[兼容说明](docs/COMPATIBILITY.md)；目前尚未确认最低支持的系统版本。版本改动见 [Changelog](CHANGELOG.md)。
 
 需要在应用中验证新接口时，运行 `./prepare_api_smoke.ps1`，在 DevEco 打开生成的 `build/api-v4-harmony`。它使用独立包 `com.torry2022.tantivyapiprobe`，需配置匹配包名和目标设备的调试 Profile，可关联已有调试证书和密钥。生成脚本拒绝覆盖已有工程。v4 的 create/reopen/readonly 阶段调用见验证记录；原 v2 测试工程可用 `-ApiVersion 2 -Destination <新目录>` 生成。
 

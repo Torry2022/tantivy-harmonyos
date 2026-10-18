@@ -31,6 +31,7 @@ int main(int argc,char** argv){
         writer.reset(); // the result owns its hit/field/sort strings
         size_t count=0;check(tantivy_ohos_result_count_v2(result.get(),&count,&error),error);
         uint64_t total=0;bool exact=false;check(tantivy_ohos_result_total_v4(result.get(),&total,&exact,&error),error);
+        if(count!=2||total!=3||!exact)throw std::runtime_error("unexpected page or total");
         std::cout<<"page="<<count<<" total="<<total<<" exact="<<exact<<'\n';
         for(size_t i=0;i<count;i++){
             tantivy_ohos_hit_view_v2 hit={};tantivy_ohos_value_view_v2 sort={};bool present=false;

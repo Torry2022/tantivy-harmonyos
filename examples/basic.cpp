@@ -44,6 +44,7 @@ int main(int argc, char** argv) {
         reader.reset(); // result keeps its own data
         size_t count = 0;
         checked(tantivy_ohos_result_count_v2(result.get(), &count, &error), error);
+        if (count != 1) throw std::runtime_error("expected one persisted hit");
         for (size_t i = 0; i < count; ++i) {
             tantivy_ohos_hit_view_v2 hit = {};
             checked(tantivy_ohos_result_hit_v2(result.get(), i, &hit, &error), error);

@@ -795,3 +795,27 @@ fn read_only_metadata_lock_coordinates_with_tantivy_in_both_directions() {
     }
     std::fs::remove_dir_all(path).unwrap();
 }
+
+#[test]
+fn frozen_64_bit_c_layouts() {
+    use std::mem::{offset_of, size_of};
+    assert_eq!(size_of::<usize>(), 8, "only 64-bit SDK targets are covered");
+    macro_rules! layout {
+        ($ty:ty, $size:expr, $($field:ident => $offset:expr),+ $(,)?) => {
+            assert_eq!(size_of::<$ty>(), $size, stringify!($ty));
+            $(assert_eq!(offset_of!($ty, $field), $offset,
+                concat!(stringify!($ty), ".", stringify!($field)));)+
+        };
+    }
+    layout!(api::FieldSpecV2, 16, name => 0, kind => 8, flags => 12);
+    layout!(api::CreateOptionsV2, 32, struct_size => 0, version => 8,
+        fields => 16, field_count => 24);
+    layout!(api::OpenOptionsV2, 16, struct_size => 0, version => 8, mode => 12);
+    layout!(api::SearchOptionsV2, 48, struct_size => 0, version => 8, projection => 12,
+        fields => 16, field_count => 24, query_fields => 32, query_field_count => 40);
+    layout!(api::FieldValueV2, 40, name => 0, kind => 8, string_value => 16,
+        i64_value => 24, f64_value => 32);
+    layout!(api::HitViewV2, 24, id => 0, score => 8, field_count => 16);
+    layout!(api::ValueViewV2, 40, name => 0, kind => 8, string_value => 16,
+        i64_value => 24, f64_value => 32);
+}

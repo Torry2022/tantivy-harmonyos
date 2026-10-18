@@ -1,5 +1,5 @@
 /* ABI 1 regression consumer. Compile against the original header/library, create
- * an index, then run the unchanged executable with the ABI 2 library to read it.
+ * an index, then run the unchanged executable with the candidate library to read it.
  * Usage: legacy_abi <new-or-existing-index> create|read
  */
 #include "tantivy_ohos.h"
