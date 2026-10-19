@@ -20,3 +20,13 @@ The build library SHA-256 is `453584f16e85a687cdb38945004f4c5fb49286f9477c9d05e9
 The device shell could read probe reports but could not enumerate private index directories, so whole-directory hash/mtime immutability was verified on the Linux host, not asserted for the device. The existing chat process remained running with unchanged CPU counters throughout device checks. No chat App or model was changed.
 
 The independent application can be prepared with `prepare_api_smoke.ps1`; keep signing configuration local and use a new runId for each trial. Logs, hashes and host reports for this check remain locally under `build/`. No new performance claim or minimum supported OS version is inferred from these functional checks.
+
+## Release package integration — 2026-10-19
+
+The release candidate ZIP was extracted into a separate directory. All six C/C++ consumers were cross-compiled using only its source, public header and shared library, with warnings treated as errors. The SDK toolchain's unused `--gcc-toolchain` argument warning was disabled for this consumer build; source warnings remained errors.
+
+An independent application built from the extracted sample ran create, reopen and readonly in separate processes on an idle MateBook Pro S (HarmonyOS 7.0.0.111, API 26). All three phases passed, including writer options, paging, projections, sorting, aggregations and score validation; error logs were empty. Local signing configuration was supplied separately and is excluded from the SDK. No chat App was installed, restarted or changed.
+
+The extracted library has the same `453584f16e85a687cdb38945004f4c5fb49286f9477c9d05e967acef5cb84c1d` SHA-256 as the previously validated build. Its 17 exported functions match the packaged header, which is identical to the packaged source header. The HAP's library matches the SDK library after DevEco's stripping step. Whole-index read-only immutability remains covered by the Linux host checks above; it was not asserted for the private device sandbox.
+
+The archive checker verified the file checksum inventory, required source/examples/licenses, matching headers and AArch64 library hash. These checks cover the current package and tested configuration, not older HarmonyOS releases or a minimum supported system version.

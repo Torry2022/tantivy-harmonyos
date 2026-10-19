@@ -8,12 +8,20 @@ This unofficial adapter uses Tantivy **0.26.2** and jieba-rs **0.8.1**, without 
 
 ## Get the SDK
 
-Cross-compile the shared library and its matching header on Windows as follows, then copy them into your project.
+Download `tantivy-0.26.2-harmonyos-arm64-v8a.zip` and `SHA256SUMS` from [v0.26.2-ohos.3](https://github.com/Torry2022/tantivy-harmonyos/releases/tag/v0.26.2-ohos.3). The ZIP includes the matching shared library and header, source, examples and dependency licenses. Extract it and follow the integration section below.
+
+```powershell
+Get-FileHash .\tantivy-0.26.2-harmonyos-arm64-v8a.zip -Algorithm SHA256
+```
+
+Compare the output with `SHA256SUMS`. The library is under `lib/arm64-v8a` and the header under `include`. Use them together; callers of earlier releases must update their calls to the current interface and recompile.
+
+To build from source, use the following Windows cross-compilation steps.
 
 Windows builds need Git, [Rust](https://rustup.rs/), the OpenHarmony Native SDK bundled with DevEco, and the Windows x86_64 UCRT toolchain from [llvm-mingw](https://github.com/mstorsjo/llvm-mingw/releases). Builds have used Rust 1.90.0, llvm-mingw 20261006 UCRT and Native SDK API 26; this does not establish a minimum supported OS version.
 
 ```powershell
-git clone https://github.com/Torry2022/tantivy-harmonyos.git
+git clone --branch v0.26.2-ohos.3 https://github.com/Torry2022/tantivy-harmonyos.git
 cd tantivy-harmonyos
 rustup toolchain install 1.90.0-x86_64-pc-windows-gnu --profile minimal
 rustup target add aarch64-unknown-linux-ohos --toolchain 1.90.0-x86_64-pc-windows-gnu

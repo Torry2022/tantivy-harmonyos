@@ -8,12 +8,20 @@
 
 ## 获取 SDK
 
-通过下面的 Windows 交叉编译步骤获取配套的动态库和头文件，再复制到自己的工程。
+从 [v0.26.2-ohos.3](https://github.com/Torry2022/tantivy-harmonyos/releases/tag/v0.26.2-ohos.3) 下载 `tantivy-0.26.2-harmonyos-arm64-v8a.zip` 和 `SHA256SUMS`。ZIP 包含配套的动态库、头文件、源码、示例及依赖许可证，解压后即可按下节接入。
+
+```powershell
+Get-FileHash .\tantivy-0.26.2-harmonyos-arm64-v8a.zip -Algorithm SHA256
+```
+
+将输出与 `SHA256SUMS` 核对。动态库位于 `lib/arm64-v8a`，头文件位于 `include`。请配套使用；旧版调用方需按当前接口修改调用并重新编译。
+
+需要从源码构建时，可使用下面的 Windows 交叉编译步骤。
 
 Windows 构建需要 Git、[Rust](https://rustup.rs/)、DevEco 附带的 OpenHarmony Native SDK，以及 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw/releases) 的 Windows x86_64 UCRT 工具链。已使用 Rust 1.90.0、llvm-mingw 20261006 UCRT 和 Native SDK API 26 构建；这不代表最低支持系统版本。
 
 ```powershell
-git clone https://github.com/Torry2022/tantivy-harmonyos.git
+git clone --branch v0.26.2-ohos.3 https://github.com/Torry2022/tantivy-harmonyos.git
 cd tantivy-harmonyos
 rustup toolchain install 1.90.0-x86_64-pc-windows-gnu --profile minimal
 rustup target add aarch64-unknown-linux-ohos --toolchain 1.90.0-x86_64-pc-windows-gnu
